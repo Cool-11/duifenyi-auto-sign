@@ -63,5 +63,19 @@ class ApplyRoundTripTest(unittest.TestCase):
             self.assertIn(key, values)
 
 
+class MonitorWindowTest(unittest.TestCase):
+    """监听时间窗默认全天，避免夜间测试被静默拦住。"""
+
+    def test_default_is_full_day(self) -> None:
+        settings = Settings()
+        self.assertEqual(settings.monitor_start_hour, 0)
+        self.assertEqual(settings.monitor_end_hour, 24)
+
+    def test_apply_full_day(self) -> None:
+        settings = Settings()
+        settings.apply({"monitor_start_hour": "0", "monitor_end_hour": "24"})
+        self.assertEqual((settings.monitor_start_hour, settings.monitor_end_hour), (0, 24))
+
+
 if __name__ == "__main__":
     unittest.main()

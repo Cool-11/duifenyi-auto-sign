@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from typing import Any
@@ -21,6 +22,13 @@ AJAX_HEADERS = {**FORM_HEADERS, "X-Requested-With": "XMLHttpRequest"}
 STUDENT_ENTRY_PATH = "/_CheckIn/MB/CheckInStudent.aspx?moduleid=16&pasd="
 STUDENT_REFERER = f"https://www.duifene.com{STUDENT_ENTRY_PATH}"
 DISTANCE_RE = re.compile(r"距离[:：]\s*([0-9]+(?:\.[0-9]+)?)\s*米")
+
+
+def _strip_data_uri(value: str) -> str:
+    """去掉 ``data:image/png;base64,`` 前缀与所有空白，返回纯 base64。"""
+    if value.startswith("data:"):
+        value = value.partition(",")[2]
+    return "".join(value.split())
 # 二维码内容里的令牌：state=xxx 为常见形态，G.aspx?OnlyId= 为短链形态
 QR_STATE_RE = re.compile(r"[?&]state=([^\s&'\"#]+)")
 QR_ONLYID_RE = re.compile(r"[?&]OnlyId=([^\s&'\"#]+)")
@@ -443,11 +451,31 @@ class DuifeneApi:
 
     @staticmethod
     def _extract_base64_image(text: str) -> str | None:
-        """从图像接口响应中取出 base64 主体；兼容 data URI 与裸 base64。"""
-        match = BASE64_RE.search(text or "")
+        """从图像接口响应中取出 base64 主体。
+
+        服务端实际返回 ``{"msg":1,"msgbox":"二维码生成成功！","data":"iVBOR..."}``，
+        且 ASP.NET 会把 ``/`` 转义成 ``\\/``——直接跑正则会因转义把 base64 串切断，
+        导致「有图却解不出令牌」。因此先按 JSON 取 ``data``，再回退到还原转义后的正则。
+        """
+        text = (text or "").strip()
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            for key in ("data", "img", "image", "base64", "qrCode", "msgbox"):
+                value = payload.get(key)
+                if isinstance(value, str) and len(value) > 200:
+                    return _strip_data_uri(value)
+        if isinstance(payload, str) and len(payload) > 200:
+            return _strip_data_uri(payload)
+        unescaped = text.replace("\\/", "/")
+        match = BASE64_RE.search(unescaped)
         if match:
             return "".join(match.group(1).split())
-        match = RAW_BASE64_RE.search(text or "")
+        match = RAW_BASE64_RE.search(unescaped)
         return match.group(0) if match else None
 
     def _location_payload(

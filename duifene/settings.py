@@ -154,9 +154,9 @@ class Settings:
     sign_delay_s: float = 0.0
     # 最低已签人数门禁：已签人数达到该值才签；0 表示不启用
     min_headcount: int = 0
-    # 监听时间窗（左闭右开）
-    monitor_start_hour: int = 6
-    monitor_end_hour: int = 23
+    # 监听时间窗（左闭右开）；0–24 表示全天轮询
+    monitor_start_hour: int = 0
+    monitor_end_hour: int = 24
     # 限流
     cooldown_seconds: float = 300.0
     rate_limit_markers: tuple[str, ...] = ("过于频繁", "频繁")

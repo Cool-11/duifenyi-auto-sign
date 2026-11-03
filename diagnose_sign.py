@@ -287,6 +287,11 @@ def main() -> None:
     """按顺序执行八步诊断，任何一步失败都不影响后续。"""
     parser = argparse.ArgumentParser(description="对分易四类签到链路诊断")
     parser.add_argument("link", nargs="?", default="", help="微信 OAuth 链接")
+    parser.add_argument(
+        "--link-file",
+        default="",
+        help="从文件读取链接（链接含 & 时命令行容易被截断）",
+    )
     parser.add_argument("--reuse", action="store_true", help="复用已保存的 Cookie")
     parser.add_argument("--course", type=int, default=1, help="课程序号，从 1 开始")
     parser.add_argument(
@@ -295,6 +300,9 @@ def main() -> None:
         help="额外用旧表单（缺 cid/tcid）做定位对照",
     )
     args = parser.parse_args()
+    if args.link_file:
+        with open(args.link_file, encoding="utf-8") as handle:
+            args.link = handle.read().strip()
 
     settings = Settings()
     session = load_session()

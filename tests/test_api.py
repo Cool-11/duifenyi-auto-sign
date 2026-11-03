@@ -131,6 +131,13 @@ class QrParsingTest(unittest.TestCase):
         self.assertIsNone(DuifeneApi._extract_base64_image(""))
         self.assertIsNone(DuifeneApi._extract_base64_image("参数错误"))
 
+    def test_extract_json_with_escaped_slash(self) -> None:
+        """服务端把 base64 里的 / 转义成 \\/，不能被正则切断。"""
+        payload = "iVBORw0KGgo" + "/" * 250 + "AAA"
+        text = json.dumps({"msg": 1, "msgbox": "二维码生成成功！", "data": payload})
+        text = text.replace("/", "\\/")  # 模拟 ASP.NET 的 JSON 转义
+        self.assertEqual(DuifeneApi._extract_base64_image(text), payload)
+
     def test_state_from_full_url(self) -> None:
         api = make_api()
         url = "https://www.duifene.com/_CheckIn/MB/QrCodeCheckOK.aspx?state=AbC-1_2#x"
