@@ -7,6 +7,35 @@
 
 ---
 
+## [1.5.3] - 2026-11-04
+
+任务 2（二维码解码模块与依赖声明）收尾：把「能解出令牌」变成可离线复现的用例。
+
+### 优化
+
+- **优化** `duifene/qrdecode.py`：`io` 提到模块级、`available()` 加 `lru_cache`
+  （依赖不会在运行期变化，避免每轮重复 import）
+- **优化** 解码支持一张图内多个码：取第一个能解出文本的结果
+
+### 测试
+
+- **测试** 新增 `tests/test_qrdecode.py`（7 例）：
+  - 依赖声明断言：`requirements.txt` 必须含 Pillow/pyzbar，`build.spec` 必须
+    `collect_dynamic_libs("pyzbar")`——防止「源码能解、打包不能解」复发
+  - 脏输入降级：非法 base64 / 损坏 PNG 返回 `None`，不抛异常
+  - **内嵌一张真实二维码图**（内容为带 `state=FIXTURE123` 的签到 URL），
+    离线跑通「PNG → 解码 → 提取令牌」全链路
+
+### 变更
+
+- **变更** 版本号 `1.5.2` → `1.5.3`
+
+### 验证
+
+- `python -m unittest discover -s tests -v` → **62 passed**
+
+---
+
 ## [1.5.2] - 2026-11-04
 
 任务 1（`api.py` 四类接口修复）的收尾加固：响应异常不再抛异常。
