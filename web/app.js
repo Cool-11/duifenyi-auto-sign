@@ -538,6 +538,25 @@
       });
     });
 
+    // 手动签到：平台不再向学生下发签到码/汉字答案，由用户从群消息复制后提交，
+    // 登记后 5 分钟内遇到签到码/汉字活动即自动使用
+    function submitManual() {
+      var input = $("manualInput");
+      var value = (input.value || "").replace(/\s/g, "");
+      if (value.length !== 4) {
+        toast("请输入 4 位签到码或 4 个汉字", "error");
+        return;
+      }
+      api.submit_manual_code(value).then(function (r) {
+        toast(r.message, r.ok ? "success" : "error");
+        if (r.ok) input.value = "";
+      });
+    }
+    $("manualBtn").addEventListener("click", submitManual);
+    $("manualInput").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") submitManual();
+    });
+
     // 停止监听
     $("stopBtn").addEventListener("click", function () {
       api.stop_watching().then(function (r) {

@@ -119,7 +119,7 @@ class StubStore:
         return None
 
 
-def make_processor(**overrides) -> tuple[ActivityProcessor, StubApi, list[str]]:
+def make_processor(manual=None, **overrides) -> tuple[ActivityProcessor, StubApi, list[str]]:
     """组装处理器与可观测的日志列表。"""
     settings = Settings()
     settings.qr_retry_interval_s = 0.0
@@ -128,7 +128,7 @@ def make_processor(**overrides) -> tuple[ActivityProcessor, StubApi, list[str]]:
     api = StubApi()
     logs: list[str] = []
     processor = ActivityProcessor(
-        settings, api, StubPush(), StubResolver(), StubStore(), logs.append
+        settings, api, StubPush(), StubResolver(), StubStore(), logs.append, manual
     )
     return processor, api, logs
 
@@ -185,6 +185,32 @@ class CodeSignTest(unittest.TestCase):
         )
         self.assertTrue(any("上限 3 轮" in line for line in logs))
         self.assertTrue(any("放弃" in line for line in logs))
+
+
+class ManualCodeTest(unittest.TestCase):
+    """手动提交的码：签到码与汉字都应使用，且只消费一次。"""
+
+    def test_manual_code_signs_once(self) -> None:
+        pending = ["8888"]
+        processor, api, _logs = make_processor(
+            manual=lambda: pending.pop() if pending else None
+        )
+        self.assertIs(processor._sign_code(make_activity(), COURSE), Outcome.SIGNED)
+        self.assertEqual(api.codes, ["8888"])
+        # 已消费：下一条活动回到等待，不会重复提交同一个码
+        self.assertIs(
+            processor._sign_code(make_activity(activity_id="2"), COURSE),
+            Outcome.DEFERRED,
+        )
+        self.assertEqual(api.codes, ["8888"])
+
+    def test_manual_answer_used_for_hanzi(self) -> None:
+        pending = ["春眠不觉"]
+        processor, api, _logs = make_processor(
+            manual=lambda: pending.pop() if pending else None
+        )
+        self.assertIs(processor._sign_hanzi(make_activity(), COURSE), Outcome.SIGNED)
+        self.assertEqual(api.codes, ["春眠不觉"])
 
 
 class HanziSignTest(unittest.TestCase):

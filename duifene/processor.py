@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 from .api import DuifeneApi
 from .config import IniStore
@@ -28,6 +29,7 @@ class ActivityProcessor:
         resolver: LocationResolver,
         store: IniStore,
         log: LogFn,
+        manual_code: Callable[[], str | None] | None = None,
     ) -> None:
         self._settings = settings
         self._api = api
@@ -35,6 +37,8 @@ class ActivityProcessor:
         self._resolver = resolver
         self._store = store
         self._log = log
+        # 用户在界面上手动登记的 4 位码/汉字（平台不再下发给学生，只能人工提供）
+        self._take_manual = manual_code or (lambda: None)
         self._handled: set[str] = set()
         self._headcount_log: dict[str, tuple[int, int]] = {}
         self._wait_start: dict[str, float] = {}
@@ -218,14 +222,21 @@ class ActivityProcessor:
         return outcome
 
     def _sign_code(self, activity: CheckInActivity, course: Course) -> Outcome:
-        """签到码签到：列表字段缺失时回退到考勤入口页取码。"""
+        """签到码签到：列表字段 → 手动登记 → 考勤入口页，依次取码。"""
         code = activity.code
         if not (code and len(code) == 4):
-            code = self._api.fetch_code_from_entry() or ""
+            code = self._manual_or_entry()
         if not (code and len(code) == 4):
             return self._wait_answer(activity, course, "签到码", "服务端未下发")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交签到码 {code}")
         return self._report(activity.id, self._api.sign_by_code(code), course)
+
+    def _manual_or_entry(self) -> str:
+        """取手动登记的码；没有则回退到入口页抓取，返回空串表示都没有。"""
+        manual = self._take_manual() or ""
+        if len(manual) == 4:
+            return manual
+        return self._api.fetch_code_from_entry() or ""
 
     def _wait_answer(
         self, activity: CheckInActivity, course: Course, what: str, hint: str = ""
@@ -318,7 +329,7 @@ class ActivityProcessor:
         """
         answer = activity.code
         if not (answer and len(answer) == 4):
-            answer = self._api.fetch_hanzi_answer(course) or ""
+            answer = self._take_manual() or self._api.fetch_hanzi_answer(course) or ""
         if not answer:
             return self._wait_answer(activity, course, "汉字答案", "学生端无法取得")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交汉字 {answer}")

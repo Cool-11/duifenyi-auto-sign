@@ -53,8 +53,19 @@ class Bridge:
             settings, self._api, lambda: self._api.cached_user_id, self._log
         )
         self._resolver = LocationResolver(settings, self._api)
+        # 手动签到的 4 位码/汉字：平台不再下发给学生，只能由用户从群里复制过来；
+        # 登记后 5 分钟内有效，被某条签到码/汉字活动取用即消费掉。
+        self._manual_lock = threading.Lock()
+        self._manual_code: str | None = None
+        self._manual_until = 0.0
         self._processor = ActivityProcessor(
-            settings, self._api, self._push, self._resolver, self._store, self._log
+            settings,
+            self._api,
+            self._push,
+            self._resolver,
+            self._store,
+            self._log,
+            self._take_manual_code,
         )
         self._watcher = Watcher(
             settings,
@@ -154,6 +165,31 @@ class Bridge:
         if "重新登录" in text:
             self._logged_in = False
         self._pending_notice = {"level": level, "text": text}
+
+    def _take_manual_code(self) -> str | None:
+        """取走手动登记的码（一次性）；过期或未登记返回 None。"""
+        with self._manual_lock:
+            code = self._manual_code
+            self._manual_code = None
+            if code and time.time() <= self._manual_until:
+                return code
+            return None
+
+    def submit_manual_code(self, code: str) -> dict[str, Any]:
+        """登记一次手动签到码/汉字，供接下来出现的签到码/汉字活动使用。"""
+        try:
+            text = "".join(str(code or "").split())
+            if len(text) != 4:
+                return {"ok": False, "message": "请输入 4 位签到码或 4 个汉字"}
+            with self._manual_lock:
+                self._manual_code = text
+                self._manual_until = time.time() + 300
+            self._log(
+                f"已登记手动签到内容 {text}（5 分钟内有效，遇到签到码/汉字活动即提交）"
+            )
+            return {"ok": True, "message": "已登记，等待签到活动"}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": f"登记失败：{exc!s}"}
 
     def _on_login_invalid(self) -> None:
         """登录态经探测确认为失效时的处置：停监控、翻转状态位、告警。
