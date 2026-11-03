@@ -241,6 +241,30 @@ class CodeAndHanziSourceTest(unittest.TestCase):
         self.assertEqual(api.fetch_hanzi_answer(COURSE), "处处闻啼")
 
 
+class ResponseRobustnessTest(unittest.TestCase):
+    """服务端返回异常形态时不得抛异常，只能返回空值。"""
+
+    def test_sign_by_location_non_json(self) -> None:
+        api = make_api({"/CheckInRoomHandler.ashx": FakeResponse(text="<html>x</html>")})
+        self.assertIsNone(api.sign_by_location(COURSE, 116.5, 39.5))
+
+    def test_fetch_activities_accepts_int_msg(self) -> None:
+        body = json.dumps({"msg": 1, "rows": [{"ID": "1", "CheckInType": "2"}]})
+        api = make_api({"/MBCount.ashx": FakeResponse(text=body)})
+        activities = api.fetch_activities("456", "42")
+        self.assertIsNotNone(activities)
+        self.assertEqual(len(activities or []), 1)
+        self.assertEqual((activities or [None])[0].type, "2")
+
+    def test_fetch_activities_rejects_non_dict(self) -> None:
+        api = make_api({"/MBCount.ashx": FakeResponse(text="[]")})
+        self.assertIsNone(api.fetch_activities("456", "42"))
+
+    def test_fetch_activities_rejects_html(self) -> None:
+        api = make_api({"/MBCount.ashx": FakeResponse(text="<html>")})
+        self.assertIsNone(api.fetch_activities("456", "42"))
+
+
 class LoginProbeTest(unittest.TestCase):
     """登录态探测的容错行为。"""
 

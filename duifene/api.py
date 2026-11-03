@@ -127,7 +127,10 @@ class DuifeneApi:
         )
         if response.status_code != 200:
             return ""
-        return response.json().get("msgbox", "")
+        try:
+            return response.json().get("msgbox", "")
+        except ValueError:
+            return ""
 
     def fetch_courses(self) -> list[dict[str, Any]]:
         """拉取学生课程列表；请求失败返回空列表。
@@ -147,7 +150,10 @@ class DuifeneApi:
         )
         if response.status_code != 200:
             return []
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            return []
         if isinstance(data, list):
             return data
         message = (
@@ -230,10 +236,17 @@ class DuifeneApi:
         )
         if response.status_code != 200:
             return None
-        data = response.json()
-        if data.get("msg") != "1":
+        try:
+            data = response.json()
+        except ValueError:
             return None
-        return [CheckInActivity.from_raw(row) for row in data.get("rows", [])]
+        # msg 可能是字符串 "1" 也可能是数字 1，统一按字符串比；非 dict 直接判失败
+        if not isinstance(data, dict) or str(data.get("msg")) != "1":
+            return None
+        rows = data.get("rows") or []
+        if not isinstance(rows, list):
+            return None
+        return [CheckInActivity.from_raw(row) for row in rows]
 
     def fetch_headcount(self, check_in_id: str) -> tuple[int, int] | None:
         """查询签到人数 `(已签到, 总人数)`；失败返回 None。
@@ -547,7 +560,10 @@ class DuifeneApi:
         )
         if response.status_code != 200:
             return None
-        return response.json().get("msgbox", "")
+        try:
+            return response.json().get("msgbox", "")
+        except ValueError:
+            return None
 
     def probe_distance(
         self, course: Course, longitude: float, latitude: float
