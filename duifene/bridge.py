@@ -11,7 +11,7 @@ from typing import Any
 import requests
 import urllib3
 
-from . import __version__
+from . import __version__, qrdecode
 from .api import DuifeneApi
 from .config import IniStore, resolve_ini_path
 from .errors import AuthError
@@ -268,6 +268,12 @@ class Bridge:
             message = f"初始化失败：{exc!s}"
         # 哨兵常驻：只要已登录就持续探测 Cookie 有效性，与是否在监听无关。
         self._sentinel.start()
+        # 二维码签到依赖本机解码能力，缺失要在启动时就说清楚，别等签到时才失败。
+        if not qrdecode.available():
+            self._log(
+                "未安装 Pillow/pyzbar，二维码签到将失败："
+                "请执行 pip install -r requirements.txt"
+            )
         return {
             "ok": True,
             "version": __version__,

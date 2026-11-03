@@ -29,6 +29,10 @@ PR #16 / #17）。**v1.3 针对四类签到各修了一处**：
 静默等待；「失败后重试成功」的成功回执不再被日志静音吞掉；`已签到/请勿重复签到`
 也被正确识别为签到成功。
 
+**v1.4** 在其上补齐工程化能力：`diagnose_sign.py` 全链路诊断脚本、离线单元测试、
+签到码/汉字取不到时的轮次收口、二维码依赖缺失的显式提示，以及三个可调参数
+（`qr_retry_interval_s` / `qr_max_rounds` / `answer_wait_rounds`）。
+
 ---
 
 ## 二、环境要求
@@ -134,6 +138,9 @@ python main.py
 | `stale_sign_minutes` | 30 | 创建超过多少分钟的旧活动不再处理 |
 | `ws_follow_distance_m` | 50 | 只跟随距教室小于该值的推送坐标（米） |
 | `ws_wait_timeout_s` | 15 | 等待他人推送坐标的时长（秒） |
+| `qr_retry_interval_s` | 6 | 二维码重试间隔（秒），令牌滚动，太短无意义 |
+| `qr_max_rounds` | 8 | 二维码重试轮次上限，超过即判定活动结束 |
+| `answer_wait_rounds` | 12 | 签到码/汉字取不到时的重试轮次上限 |
 | `cooldown_seconds` | 300 | 命中服务端限流后的静默时长（秒） |
 | `proxy_url` | 空 | 抓包/代理地址，如 `http://127.0.0.1:8080`；填了会自动关闭 TLS 校验 |
 
@@ -147,12 +154,14 @@ python main.py
 **登录失效**：链接登录的 Cookie 有效期有限，重新复制微信链接登录即可，不必重装。
 
 **签到码签到失败（日志：未取到有效签到码）**：说明服务端这次没把码下发给学生端
-（平台改版后的常见情况）。这不是解析 bug——可在浏览器 DevTools 里看
-`MBCount.ashx`（`action=getstudentinlogbyday`）返回的行里是否还有 `CheckInCode`。
+（平台改版后的常见情况）。程序会先逐轮重试 `answer_wait_rounds` 轮，仍取不到才判失败并
+给出结论。这不是解析 bug——用 `diagnose_sign.py` 看 `MBCount.ashx`
+（`action=getstudentinlogbyday`）返回的行里是否还有 `CheckInCode`。
 
 **二维码签到失败**：
 1. 必须用**微信链接登录**；账号密码登录一定失败；
-2. 必须已安装 `Pillow` 与 `pyzbar`，否则取到图也解不出令牌（程序会在日志说明）；
+2. 必须已安装 `Pillow` 与 `pyzbar`，否则取到图也解不出令牌——缺依赖时**启动日志就会提示**，
+   失败日志也会明确写「本机缺少 Pillow/pyzbar」；
 3. 二维码令牌是滚动令牌，教师端关闭页面或活动结束后必然失败，日志会显示轮次用尽。
 
 **定位签到失败**：
@@ -162,8 +171,9 @@ python main.py
 3. 首次成功后会把该教学班的教室坐标写入 `duifenyi.ini` 的 `[LOC_<班级ID>]`，之后
    直接复用。
 
-**汉字签到失败（日志：暂未取得汉字答案）**：答案来源受限，程序会持续重试到活动过期；
-可把该行日志连同活动 ID 反馈，便于适配新的答案字段。
+**汉字签到失败（日志：未取到有效汉字答案）**：答案来源受限，程序先逐轮重试
+`answer_wait_rounds` 轮，仍取不到会给出确定结论而不是无限空转；把该行日志连同活动 ID
+反馈，便于适配新的答案字段。
 
 **人数获取失败 / 停在等待**：说明 `MBCount.ashx` 的人数接口没返回预期字段，日志会留痕；
 此时可临时把 `min_headcount` 设为 0、`headcount_ratio` 设为 0 观察。
@@ -174,19 +184,35 @@ python main.py
 
 ## 九、调试脚本
 
-`diagnose_location.py` 可在不发真实签到的情况下核对链路：
+### 9.1 `diagnose_sign.py`（四类签到全链路诊断）
 
 ```bash
-# 用新的微信链接登录并做一次远场探测（只测距，不签到）
-python diagnose_location.py "<微信OAuth链接>"
-
-# 复用上次保存的 Cookie
-python diagnose_location.py --reuse
+python diagnose_sign.py "<微信OAuth链接>"        # 登录并诊断
+python diagnose_sign.py --reuse                  # 复用 diagnose_cookies.json
+python diagnose_sign.py --reuse --compare-location   # 额外用旧表单做定位对照
 ```
 
-它会打印登录态、课程、学生 ID、`CheckInRoomHandler.ashx` 的**原始响应**、距离正则是否
-命中，以及当日活动列表的原始字段（`CheckInType` / `CheckInCode` / `CanApply` 是否还在）。
-排查「平台又改字段了」时，这是最快的一步。
+八步逐环打印**原始响应**：登录态 → 课程/学生 ID → 当日活动字段（`CheckInType` /
+`CheckInCode` / `CanApply` 是否还在，缺哪个直接标 `✗`）→ 人数接口 → 签到码探针（用无效码
+`0000`，不会真签到）→ 二维码（直签回执 + 实时令牌是否解得出来）→ 汉字/取码三个来源 →
+定位（远场测距，不会签到成功）。平台再改版时，跑一遍就知道断在哪一环。
+
+### 9.2 `diagnose_location.py`（定位专项）
+
+```bash
+python diagnose_location.py "<微信OAuth链接>"   # 远场探测，只测距
+python diagnose_location.py --reuse            # 复用 Cookie
+```
+
+只覆盖定位链路：打印 `CheckInRoomHandler.ashx` 的原始响应与距离正则命中情况。
+
+### 9.3 离线单元测试
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+不联网、不需要登录，覆盖定位表单构造、二维码解析与令牌提取、回执判定、取码兜底与重试收口。
 
 ---
 

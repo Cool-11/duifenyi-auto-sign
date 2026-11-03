@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from . import qrdecode
 from .api import DuifeneApi
 from .config import IniStore
 from .errors import LogFn, RateLimited
@@ -46,6 +47,8 @@ class ActivityProcessor:
         # 二维码签到：令牌滚动轮换，需按节拍重试并限制轮次
         self._qr_last: dict[str, float] = {}
         self._qr_rounds: dict[str, int] = {}
+        # 取码/取答案的重试轮次：服务端迟迟不下发时按上限收口
+        self._answer_rounds: dict[str, int] = {}
 
     def reset(self) -> None:
         """清空跨轮次状态。"""
@@ -56,6 +59,7 @@ class ActivityProcessor:
         self._result_logged.clear()
         self._qr_last.clear()
         self._qr_rounds.clear()
+        self._answer_rounds.clear()
 
     def _log_attempt(self, activity_id: str, course: Course, message: str) -> None:
         """输出签到尝试文案；该活动已出过结果时静默。"""
@@ -211,6 +215,7 @@ class ActivityProcessor:
             self._wait_start.pop(activity.id, None)
             self._qr_last.pop(activity.id, None)
             self._qr_rounds.pop(activity.id, None)
+            self._answer_rounds.pop(activity.id, None)
         return outcome
 
     def _sign_code(self, activity: CheckInActivity, course: Course) -> Outcome:
@@ -219,14 +224,37 @@ class ActivityProcessor:
         if not (code and len(code) == 4):
             code = self._api.fetch_code_from_entry() or ""
         if not (code and len(code) == 4):
-            self._log_result(
-                activity.id,
-                course,
-                f"活动 {activity.id} 未取到有效签到码（服务端未下发），跳过",
-            )
-            return Outcome.SKIPPED
+            return self._wait_answer(activity, course, "签到码")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交签到码 {code}")
         return self._report(activity.id, self._api.sign_by_code(code), course)
+
+    def _wait_answer(
+        self, activity: CheckInActivity, course: Course, what: str
+    ) -> Outcome:
+        """取不到签到码／汉字答案时的收口：先按轮次重试，超过上限再明确放弃。
+
+        服务端可能迟迟不下发码，直接判失败会误伤；但无限重试只会每轮刷屏并拖到
+        活动过期，因此用 ``answer_wait_rounds`` 卡住上限，结束时给出确定结论。
+        """
+        aid = activity.id
+        rounds = self._answer_rounds.get(aid, 0) + 1
+        self._answer_rounds[aid] = rounds
+        limit = self._settings.answer_wait_rounds
+        if rounds >= limit:
+            self._log_result(
+                aid,
+                course,
+                f"活动 {aid} 未取到有效{what}（已重试 {rounds} 轮），放弃",
+            )
+            return Outcome.SKIPPED
+        marker = f"{what}_pending"
+        if self._gate_log.get(aid) != marker:
+            self._gate_log[aid] = marker
+            self._log_course(
+                course,
+                f"活动 {aid} 暂未取到{what}，逐轮重试（上限 {limit} 轮）",
+            )
+        return Outcome.DEFERRED
 
     def _sign_qr(self, activity: CheckInActivity, course: Course) -> Outcome:
         """二维码签到：活动 ID 直签 → 实时令牌重试。
@@ -262,16 +290,23 @@ class ActivityProcessor:
         if self._is_signed(message):
             self._log_result(aid, course, "签到成功", force=True)
             return Outcome.SIGNED
+        # 失败原因分两类：本机缺解码依赖（装了就好的事）与服务端未给令牌（只能等）
+        reason = message or "无响应"
+        if not qrdecode.available():
+            reason = (
+                "本机缺少 Pillow/pyzbar，二维码无法解码；"
+                "请执行 pip install -r requirements.txt"
+            )
         if self._qr_rounds[aid] >= self._settings.qr_max_rounds:
             self._log_result(
-                aid, course, f"活动 {aid} 二维码签到失败：{message or '无响应'}"
+                aid, course, f"活动 {aid} 二维码签到失败：{reason}"
             )
             return Outcome.SKIPPED
         if self._gate_log.get(aid) != "qr_retry":
             self._gate_log[aid] = "qr_retry"
             self._log_course(
                 course,
-                f"活动 {aid} 二维码未取到有效令牌（{message or '无响应'}），"
+                f"活动 {aid} 二维码未签上（{reason}），"
                 f"每 {int(self._settings.qr_retry_interval_s)} 秒重试，"
                 f"最多 {self._settings.qr_max_rounds} 轮",
             )
@@ -287,13 +322,7 @@ class ActivityProcessor:
         if not (answer and len(answer) == 4):
             answer = self._api.fetch_hanzi_answer(course) or ""
         if not answer:
-            if self._gate_log.get(activity.id) != "hanzi_pending":
-                self._gate_log[activity.id] = "hanzi_pending"
-                self._log_course(
-                    course,
-                    f"活动 {activity.id} 暂未取得汉字答案，持续重试直至活动结束",
-                )
-            return Outcome.DEFERRED
+            return self._wait_answer(activity, course, "汉字答案")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交汉字 {answer}")
         return self._report(activity.id, self._api.sign_by_code(answer), course)
 

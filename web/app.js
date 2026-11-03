@@ -142,6 +142,29 @@
       ],
     },
     {
+      title: "二维码与取码",
+      fields: [
+        {
+          key: "qr_retry_interval_s",
+          label: "二维码重试间隔",
+          hint: "秒，令牌滚动，间隔太短无意义",
+          type: "number",
+        },
+        {
+          key: "qr_max_rounds",
+          label: "二维码重试轮次",
+          hint: "超过即判定活动结束",
+          type: "number",
+        },
+        {
+          key: "answer_wait_rounds",
+          label: "取码等待轮次",
+          hint: "签到码/汉字取不到时的重试轮次",
+          type: "number",
+        },
+      ],
+    },
+    {
       title: "限流与网络",
       fields: [
         {

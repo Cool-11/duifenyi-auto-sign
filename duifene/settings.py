@@ -22,6 +22,9 @@ PERSISTABLE_FIELDS: tuple[str, ...] = (
     "stale_sign_minutes",
     "ws_follow_distance_m",
     "ws_wait_timeout_s",
+    "qr_retry_interval_s",
+    "qr_max_rounds",
+    "answer_wait_rounds",
     "cooldown_seconds",
     "proxy_url",
 )
@@ -45,6 +48,9 @@ SETTING_LIMITS: dict[str, tuple[float, float]] = {
     "stale_sign_minutes": (1, 1440),
     "ws_follow_distance_m": (0.0, 10000.0),
     "ws_wait_timeout_s": (0.0, 600.0),
+    "qr_retry_interval_s": (2.0, 60.0),
+    "qr_max_rounds": (1, 60),
+    "answer_wait_rounds": (1, 240),
     "cooldown_seconds": (0.0, 3600.0),
 }
 
@@ -160,6 +166,8 @@ class Settings:
     # 二维码签到：令牌是滚动令牌，只能按间隔反复现取现用，超过轮次视为活动结束
     qr_retry_interval_s: float = 6.0
     qr_max_rounds: int = 8
+    # 取码/取答案的等待上限：服务端未下发签到码或汉字答案时的重试轮次
+    answer_wait_rounds: int = 12
     # 定位
     location_jitter_deg: float = 0.000089
     probe_center: tuple[float, float] = (39.9042, 116.4074)

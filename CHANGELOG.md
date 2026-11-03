@@ -1,0 +1,166 @@
+# 更新日志
+
+本项目的所有重要变更都记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
+版本号遵循语义化版本（`主版本.次版本.修订号`）。
+
+**变更类型**：`新增` / `修复` / `变更` / `优化` / `移除` / `文档` / `测试` / `构建`
+
+---
+
+## [1.4.0] - 2026-11-03
+
+工程化补齐：把上一轮手工排查固化为脚本与测试，并给取码/取答案补上收口。
+
+### 任务列表
+
+- [x] **T1｜测试**：新增 `tests/` 离线单元测试，覆盖定位表单构造、二维码 base64/state 解析、
+  签到回执判定、签到码/汉字取码兜底、日志静音与 `force` 语义
+  —— **已完成**：`tests/test_api.py`（14 例）、`tests/test_processor.py`（12 例）、
+  `tests/test_settings.py`（7 例，前端表单/持久化字段/区间三方一致性），
+  `python -m unittest discover -s tests` 33 例全绿
+- [x] **T2｜新增**：新增 `diagnose_sign.py`，把四类签到的链路排查固化为可复用脚本
+  （原始响应打印、字段存在性核对、旧表单对照）
+  —— **已完成**：八步诊断；`--reuse` 复用 Cookie、`--compare-location` 做新旧表单对照
+- [x] **T3｜优化**：签到码与汉字答案的等待加轮次上限（`answer_wait_rounds`），
+  避免整场活动无限重试刷屏
+  —— **已完成**：新增 `ActivityProcessor._wait_answer()`，超限后判失败并给出确定结论
+- [x] **T4｜优化**：二维码依赖可见化——启动与失败日志区分「缺 Pillow/pyzbar」与「未取到令牌」
+  —— **已完成**：`bridge.bootstrap()` 启动即提示；`_sign_qr` 的失败文案按依赖状态分流
+- [x] **T5｜变更**：设置面板暴露 `qr_retry_interval_s`、`qr_max_rounds`、`answer_wait_rounds`
+  —— **已完成**：`PERSISTABLE_FIELDS` / `SETTING_LIMITS` / 前端「二维码与取码」分组 /
+  README 参数表同步
+
+### 新增
+
+- **新增** `tests/test_api.py`：定位表单六件套、二维码 base64 与 `state` 解析（含
+  `G.aspx` 302 分支）、签到码三级取码、汉字答案回退、登录探测容错
+- **新增** `tests/test_processor.py`：回执判定矩阵、日志静音与 `force`、签到码/汉字轮次收口、
+  二维码「直签 → 令牌重投 → 轮次用尽」
+- **新增** `tests/test_settings.py`：`web/app.js` 表单 key、`PERSISTABLE_FIELDS`、
+  `SETTING_LIMITS` 三方一致性 + 新参数的校验与落盘
+- **新增** `diagnose_sign.py`：登录态 → 课程 → 活动字段 ✓/✗ 核对 → 人数 → 签到码探针 →
+  二维码直签与令牌 → 汉字/取码来源 → 定位远场测距，共八节
+- **新增** `ActivityProcessor._wait_answer()`：取不到码/答案时的统一收口逻辑
+
+### 优化
+
+- **优化** `duifene/processor.py`：签到码与汉字的等待改为「先重试、满轮次再放弃」，
+  日志只在首轮与收口时各打一条
+- **优化** `duifene/bridge.py`：启动时检测二维码解码依赖，缺失则直接记一条 error 级日志
+- **优化** 二维码失败文案：缺依赖时提示 `pip install -r requirements.txt`，
+  而不是笼统的「无响应」
+
+### 变更
+
+- **变更** `duifene/settings.py`：`qr_retry_interval_s`、`qr_max_rounds` 进入可持久化字段，
+  新增 `answer_wait_rounds`（默认 12）
+- **变更** `web/app.js`：设置面板新增「二维码与取码」分组（3 项）
+- **变更** 版本号 `1.3` → `1.4`
+- **变更** README：参数表补 3 行、排查章节按新收口逻辑改写、调试脚本拆为三小节
+
+### 验证
+
+- `python -m unittest discover -s tests -v` → **33 passed**
+- `python -m compileall duifene main.py diagnose_sign.py diagnose_location.py tests` → 通过
+- `python diagnose_sign.py --help` 正常输出用法
+- 编辑器静态检查（basedpyright）对本次改动零报错（仅 `config.py` 存在既有告警）
+
+---
+
+## [1.3.0] - 2026-11-03
+
+适配对分易 2026-10 下旬平台改版，修复四类签到的断链环节。
+
+### 新增
+
+- **新增** `duifene/qrdecode.py`：二维码解码模块（Pillow + pyzbar），把教师端实时二维码
+  还原为 `state` 令牌；依赖缺失时抛 `QrDecodeUnavailable`，不静默失败
+- **新增** `DuifeneApi.fetch_qr_state()`：`action=getcodeimage&cid=` 取图 → base64 提取 →
+  解码 → 解析 `state`；兼容 `G.aspx?OnlyId=` 短链形态（跟随一次 302 取 `Location`）
+- **新增** `DuifeneApi.prime_checkin_entry()`：按官方客户端路径预访 `Module.aspx?data=` 与
+  考勤入口页，建立会话上下文（每教学班一次）
+- **新增** `DuifeneApi.fetch_code_from_entry()`：入口页隐藏域／内联脚本兜底取 4 位签到码
+- **新增** `DuifeneApi._location_payload()`：定位签到与距离探测共用的表单构造器
+- **新增** `Settings.qr_retry_interval_s` / `qr_max_rounds`：二维码重试节拍与轮次上限
+- **新增** 设置项 `sign_delay_s`（检测后延迟秒数）、`min_headcount`（最低已签人数）
+- **新增** `config.resolve_ini_path()`：`duifenyi.ini` 锚定到程序目录，避免受工作目录影响
+- **新增** `diagnose_location.py`：定位链路诊断脚本（远场测距 + 原始响应打印）
+- **新增** `LICENSE`（MIT）、`.gitignore` 排除 `diagnose_cookies.json` 等本地凭证
+
+### 修复
+
+- **修复** 定位签到缺 `cid` / `tcid`：补齐 `action/cid/tcid/sid/经纬度` 六件套与
+  `X-Requested-With`，修复「拿到正确坐标仍签不上」
+- **修复** 二维码签到：服务端不再接受活动 ID 直签，改为直签失败后解码实时滚动令牌重投；
+  删除把「参数错误」误报成「非微信链接登录」的错误映射
+- **修复** 签到码/汉字取不到 `CheckInCode` 时静默跳过：改为入口页兜底，仍取不到则明确报错
+- **修复** 汉字签到取不到答案时无限静默 `DEFERRED`：改为提示一次并持续重试
+- **修复** `check_login()` 用 GET 携带表单体（可能被网关丢弃）：改为 POST，并容错空响应
+- **修复** 人数接口异常时无日志地无限等待：补一条「人数获取失败，暂不签到」
+- **修复** 「先失败、后重试成功」的成功回执被日志静音吞掉：结果日志支持 `force`
+- **修复** 签到回执识别过窄：`已签到` / `已经签到` / `请勿重复签到` 也判定为成功
+- **修复** 二维码提交未纳入限流状态机：补 `raise_if_blocking` 与限流文案判定
+
+### 变更
+
+- **变更** `DuifeneApi.sign_by_location()` 签名改为 `(course, longitude, latitude)`
+- **变更** `DuifeneApi._sign_post()` 统一附带 `X-Requested-With: XMLHttpRequest`
+- **变更** 版本号 `1.2` → `1.3`
+- **变更** 仓库迁移至 `Cool-11/duifenyi-remote-sign`，原仓库保留为 `upstream`
+
+### 构建
+
+- **构建** `requirements.txt` 增加 `Pillow>=10.0.0`、`pyzbar>=0.1.9`
+- **构建** `build.spec` 为 `pyzbar` / `PIL` 补充 hiddenimports
+
+### 文档
+
+- **文档** 重写 `README.md`：修复对照表、两种登录方式、四类签到工作原理、参数表、
+  常见问题排查、调试脚本、安全隐私与免责声明
+
+---
+
+## [1.2.0] - 2026-10-21
+
+### 新增
+
+- **新增** WebView2 运行时检测（注册表四个安装通道 + 版本校验），缺失时弹窗引导安装
+- **新增** 启动期原生加载遮罩（`before_show` 叠加 Label，`loaded` 后移除，15 秒看门狗兜底）
+
+### 变更
+
+- **变更** 窗口改为无边框模式，仅顶栏 `.pywebview-drag-region` 可拖动
+- **变更** 版本号 `1.1` → `1.2`
+
+---
+
+## [1.1.0] - 2026-10-12
+
+### 新增
+
+- **新增** 汉字签到支持（`type=4`）：读取 `HFCheckCodeKey` 取正确顺序后按序提交
+- **新增** `DuifeneApi.fetch_hanzi_answer()`：从教师端考勤页解析答案
+
+### 文档
+
+- **文档** README 补充汉字签到说明与四类签到策略表
+
+---
+
+## [1.0.0] - 2026-09-16
+
+首个可用版本：网页接口链路 + pywebview 桌面界面。
+
+### 新增
+
+- **新增** 两种登录方式：微信 OAuth 链接免密登录、账号密码登录，Cookie 持久化到 `duifenyi.ini`
+- **新增** 课程列表拉取与教学班选择（`/_UserCenter/CourseInfo.ashx`）
+- **新增** 当日签到活动轮询（`/_CheckIn/MBCount.ashx`）与签到类型分发
+- **新增** 签到码签到（`/_CheckIn/CheckIn.ashx`）
+- **新增** 二维码签到（`/_CheckIn/MB/QrCodeCheckOK.aspx`）
+- **新增** 定位签到三路坐标来源：messageHub WebSocket 推送跟随 → 班级坐标缓存 → 三边测量反推
+- **新增** 距离预言机（`CheckInRoomHandler.ashx` 的「距离：x 米」回执）+ 多方位探测解算教室坐标
+- **新增** 签到门禁：监听时间窗、小班快速通道、大班已签占比、旧活动上限、限流静默
+- **新增** 登录态常驻哨兵（`LoginSentinel`）与登录失败回滚，失败不写盘
+- **新增** pywebview 单页界面：登录面板、课程选择、运行状态、彩色日志（`web/`）
+- **新增** PyInstaller onedir 打包配置（`build.spec`）与 WebView2 安装包
