@@ -10,4 +10,5 @@ cookies*.json
 build/
 build_env/
 dist/
+dist_stage/
 *.zip

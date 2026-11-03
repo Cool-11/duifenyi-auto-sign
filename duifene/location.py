@@ -28,20 +28,32 @@ class LocationResolver:
     def __init__(self, settings: Settings, api: DuifeneApi) -> None:
         self._settings = settings
         self._api = api
+        # 采样进度：被限流打断时保留已采到的点，冷却后从断点继续，避免每轮都从头再采
+        self._class_id = ""
+        self._samples: list[tuple[float, float, float]] = []
+        self._cursor = 0
+        self._batch_start = True
 
     def resolve(self, course: Course) -> tuple[float, float, float] | None:
-        """远场多方位测距后反推教室坐标，返回 `(经度, 纬度, 拟合残差米)`；
-        采样不足或残差过大返回 None。"""
+        """远场多方位测距后反推教室坐标，返回 `(经度, 纬度, 拟合残差米)`。
+
+        每次探测都是一次真实签到请求，服务端按「最后一次签到请求」计时，因此：
+        按 ``probe_interval_s`` 限速、静默期内完全不探测、被限流打断时保留进度，
+        下一轮从断点续采——否则一次「过于频繁」就等于整场定位失败。
+        """
+        if self._class_id != course.class_id:
+            self._reset(course.class_id)
+        self._batch_start = True  # 本轮首次探测不再等间隔
         center_lat, center_lon = self._settings.probe_center
-        samples: list[tuple[float, float, float]] = []
-        for index in range(self._settings.probe_azimuths):
-            # 每次探测都是一次真实签到请求，服务端按「最后一次签到请求」计时，
-            # 连发必然触发「过于频繁」并导致整场静默——必须限速，且已在静默时停手。
+        total = self._settings.probe_azimuths
+        while self._cursor < total:
             if self._api.limiter.is_blocking():
-                break
-            if index:
+                return None  # 冷却中：保留样本，等静默结束接着采
+            if not self._batch_start:
                 time.sleep(self._settings.probe_interval_s)
-            angle = 2 * math.pi * index / self._settings.probe_azimuths + 0.1
+            self._batch_start = False
+            index = self._cursor
+            angle = 2 * math.pi * index / total + 0.1
             dlat = (
                 self._settings.probe_radius_m
                 * math.sin(angle)
@@ -54,13 +66,15 @@ class LocationResolver:
             try:
                 distance = self._api.probe_distance(course, lon, lat)
             except RateLimited:
-                # 限流时立即中止：继续探测只会不断重置服务端计时、加剧封锁。
-                break
+                return None
             except requests.exceptions.RequestException:
-                # 单点网络失败不应中断整个反推，跳过该点继续采样。
+                self._cursor += 1
                 continue
             if distance is not None:
-                samples.append((lat, lon, distance))
+                self._samples.append((lat, lon, distance))
+            self._cursor += 1
+        samples = self._samples
+        self._reset(course.class_id)
         if len(samples) < self._settings.probe_min_samples:
             return None
         try:
@@ -68,9 +82,15 @@ class LocationResolver:
         except Exception:
             return None
         residual = max(
-            abs(haversine(la, lo, lat, lon) - dist)
-            for la, lo, dist in samples
+            abs(haversine(la, lo, lat, lon) - dist) for la, lo, dist in samples
         )
         if residual > self._settings.probe_max_residual_m:  # 残差过大说明数据异常
             return None
         return lon, lat, residual
+
+    def _reset(self, class_id: str) -> None:
+        """切换教学班或完成一次解算后清空采样进度。"""
+        self._class_id = class_id
+        self._samples = []
+        self._cursor = 0
+        self._batch_start = True

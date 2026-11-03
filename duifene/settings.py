@@ -157,12 +157,13 @@ class Settings:
     # 监听时间窗（左闭右开）；0–24 表示全天轮询
     monitor_start_hour: int = 0
     monitor_end_hour: int = 24
-    # 限流
-    cooldown_seconds: float = 300.0
+    # 限流：服务端只说「过于频繁」，实测冷却窗口只有几秒；静默过久会吃掉整场活动
+    cooldown_seconds: float = 10.0
     rate_limit_markers: tuple[str, ...] = ("过于频繁", "频繁")
     # WebSocket 跟随
     ws_follow_distance_m: float = 50.0
-    ws_wait_timeout_s: float = 15.0
+    # 等待他人推送的时长：等太久会挤掉后续反推的时间（活动窗口常只有 30–60 秒）
+    ws_wait_timeout_s: float = 10.0
     # 二维码签到：令牌是滚动令牌，只能按间隔反复现取现用，超过轮次视为活动结束
     qr_retry_interval_s: float = 6.0
     qr_max_rounds: int = 8
@@ -171,10 +172,11 @@ class Settings:
     # 定位
     location_jitter_deg: float = 0.000089
     probe_center: tuple[float, float] = (39.9042, 116.4074)
-    probe_radius_m: float = 800_000.0
-    probe_azimuths: int = 6
+    # 探测半径：只需远大于教室判定范围即可；800km 的距离值过于异常，易被判风控
+    probe_radius_m: float = 5_000.0
+    probe_azimuths: int = 4
     # 探测间隔：每次探测都是一次签到请求，连发会被服务端判为「过于频繁」
-    probe_interval_s: float = 4.0
+    probe_interval_s: float = 3.0
     probe_min_samples: int = 3
     probe_max_residual_m: float = 50.0
     meters_per_deg_lat: float = 111132.92

@@ -147,11 +147,11 @@ python main.py
 | `min_headcount` | 0 | 最低已签人数门槛（0=不启用） |
 | `stale_sign_minutes` | 30 | 创建超过多少分钟的旧活动不再处理 |
 | `ws_follow_distance_m` | 50 | 只跟随距教室小于该值的推送坐标（米） |
-| `ws_wait_timeout_s` | 15 | 等待他人推送坐标的时长（秒） |
+| `ws_wait_timeout_s` | 10 | 等待他人推送坐标的时长（秒），等太久会挤掉反推时间 |
 | `qr_retry_interval_s` | 6 | 二维码重试间隔（秒），令牌滚动，太短无意义 |
 | `qr_max_rounds` | 8 | 二维码重试轮次上限，超过即判定活动结束 |
 | `answer_wait_rounds` | 12 | 签到码/汉字取不到时的重试轮次上限 |
-| `cooldown_seconds` | 300 | 命中服务端限流后的静默时长（秒） |
+| `cooldown_seconds` | **10** | 命中服务端限流后的静默时长（秒）；服务端冷却只有几秒，设太大会吃掉整场活动 |
 | `proxy_url` | 空 | 抓包/代理地址，如 `http://127.0.0.1:8080`；填了会自动关闭 TLS 校验 |
 
 ---
