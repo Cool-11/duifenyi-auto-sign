@@ -65,9 +65,19 @@
 - **变更** 版本号 `1.3` → `1.4`
 - **变更** README：参数表补 3 行、排查章节按新收口逻辑改写、调试脚本拆为三小节
 
+### 构建
+
+- **构建** `build.spec`：改用 `collect_dynamic_libs("pyzbar")` 收集 `libzbar-64.dll` 与
+  `libiconv.dll`，修复「源码能解码、打包后二维码不可用」的隐性缺陷
+  （仅加 hiddenimports 只能保证模块进 PYZ，动态库仍需显式收集）
+- **构建** 重新产出 onedir 包 `dist\对分易自动签到\`（约 73.2 MB / 290 个文件）
+
 ### 验证
 
 - `python -m unittest discover -s tests -v` → **41 passed**
+- 打包产物冒烟：`对分易自动签到.exe` 启动后持续存活、stderr 为空
+- 冻结环境自检：单独构建的校验程序输出 `available=True`，证明打包后 Pillow/pyzbar
+  及其 DLL 可正常加载
 - `python -m compileall duifene main.py diagnose_sign.py diagnose_location.py tests` → 通过
 - `python diagnose_sign.py --help` 正常输出用法；`--reuse` 在 Cookie 失效时给出明确引导
 - 启动冒烟：`python main.py` 进程持续存活、stderr 为空（GUI 正常拉起，未登录故未签到）

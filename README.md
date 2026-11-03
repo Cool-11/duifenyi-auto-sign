@@ -235,7 +235,22 @@ build_env\Scripts\pyinstaller build.spec --noconfirm
 # 产物：dist\对分易自动签到\
 ```
 
-`build.spec` 已把 `PIL` / `pyzbar` 加入 hiddenimports，保证二维码解码库被打进产物。
+`build.spec` 已把 `PIL` / `pyzbar` 加入 hiddenimports，并用 `collect_dynamic_libs("pyzbar")`
+收集 `libzbar-64.dll` / `libiconv.dll`——**只加 hiddenimports 是不够的**：模块进 PYZ 了，但
+解码用的动态库仍需显式收集，否则打包后二维码签到会提示「缺少 Pillow/pyzbar」。
+
+产物结构（PyInstaller 6 onedir）：
+
+```
+dist\对分易自动签到\
+├─ 对分易自动签到.exe
+└─ _internal\
+   ├─ web\            # 界面资源
+   ├─ pyzbar\         # libzbar-64.dll / libiconv.dll
+   └─ ...
+```
+
+**打包后自检**：在没装 Python 的机器上跑一次，确认日志里没有「缺少 Pillow/pyzbar」。
 
 ---
 

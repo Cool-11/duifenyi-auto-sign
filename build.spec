@@ -3,13 +3,19 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_dynamic_libs
+
 APP_NAME = "对分易自动签到"
 ICON = os.path.join("assets", "icon.ico")
+
+# pyzbar 通过包内自带的 libzbar / libiconv 动态库解码，必须随包收集，
+# 否则打包后 import pyzbar 会失败，表现为「二维码签到不可用」。
+ZBAR_BINARIES = collect_dynamic_libs("pyzbar")
 
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=[],
+    binaries=ZBAR_BINARIES,
     datas=[("web", "web")],
     hiddenimports=["pyzbar", "pyzbar.pyzbar", "PIL", "PIL.Image"],
     hookspath=[],
