@@ -38,16 +38,24 @@ class ActivityProcessor:
         self._handled: set[str] = set()
         self._headcount_log: dict[str, tuple[int, int]] = {}
         self._wait_start: dict[str, float] = {}
+        # 各门禁的提示去重标记：同活动同状态只提示一次，避免逐轮刷屏
+        self._gate_log: dict[str, object] = {}
         # 已出过结果的活动：签到失败不进 ``_handled``，活动会每轮重试；此集合
         # 作为静音开关，令同活动的提交与结果文案只在首轮输出，避免逐轮刷屏。
         self._result_logged: set[str] = set()
+        # 二维码签到：令牌滚动轮换，需按节拍重试并限制轮次
+        self._qr_last: dict[str, float] = {}
+        self._qr_rounds: dict[str, int] = {}
 
     def reset(self) -> None:
         """清空跨轮次状态。"""
         self._handled.clear()
         self._headcount_log.clear()
         self._wait_start.clear()
+        self._gate_log.clear()
         self._result_logged.clear()
+        self._qr_last.clear()
+        self._qr_rounds.clear()
 
     def _log_attempt(self, activity_id: str, course: Course, message: str) -> None:
         """输出签到尝试文案；该活动已出过结果时静默。"""
@@ -55,9 +63,15 @@ class ActivityProcessor:
             return
         self._log_course(course, message)
 
-    def _log_result(self, activity_id: str, course: Course, message: str) -> None:
-        """输出签到结果文案，并把该活动标记为已出结果（后续静默）。"""
-        if activity_id in self._result_logged:
+    def _log_result(
+        self, activity_id: str, course: Course, message: str, *, force: bool = False
+    ) -> None:
+        """输出签到结果文案，并把该活动标记为已出结果（后续静默）。
+
+        ``force`` 为真时无视静音：用于「先失败、后重试成功」的场合，否则最关键
+        的成功回执会被首轮失败留下的静音标记吞掉。
+        """
+        if activity_id in self._result_logged and not force:
             return
         self._result_logged.add(activity_id)
         self._log_course(course, message)
@@ -100,19 +114,56 @@ class ActivityProcessor:
             left = int(self._api.limiter.remaining())
             self._log_course(course, f"限流中，{left} 秒后恢复")
             return Outcome.DEFERRED
+        gate = self._delay_gate(activity, age, course)
+        if gate is not None:
+            return gate
         gate = self._headcount_gate(activity, age, course)
         if gate is not None:
             return gate
         return self._execute(activity, course)
+
+    def _delay_gate(
+        self, activity: CheckInActivity, age: float, course: Course
+    ) -> Outcome | None:
+        """延迟门禁：检测到签到后等待 sign_delay_s 秒再签；未启用返回 None。"""
+        delay = self._settings.sign_delay_s
+        if delay <= 0 or age >= delay:
+            return None
+        left = int(delay - age)
+        marker: object = left
+        if self._gate_log.get(activity.id) != marker:  # 剩余秒数变化时提示
+            self._gate_log[activity.id] = marker
+            self._log_course(
+                course, f"活动 {activity.id} 延迟等待中，还剩 {left} 秒签到"
+            )
+        return Outcome.DEFERRED
 
     def _headcount_gate(
         self, activity: CheckInActivity, age: float, course: Course
     ) -> Outcome | None:
         """人数门禁：需继续等待返回 :attr:`Outcome.DEFERRED`，可签返回 None。"""
         counts = self._api.fetch_headcount(activity.id)
-        if counts is None or not counts[1]:
+        if counts is None:
+            # 人数接口异常时若静默等待，四类签到会一起「毫无反应」，必须留痕
+            if self._gate_log.get(activity.id) != "headcount_failed":
+                self._gate_log[activity.id] = "headcount_failed"
+                self._log_course(
+                    course, f"活动 {activity.id} 人数获取失败，暂不签到，稍后重试"
+                )
+            return Outcome.DEFERRED
+        if not counts[1]:
             return Outcome.DEFERRED
         signed, total = counts
+        if self._settings.min_headcount > 0 and signed < self._settings.min_headcount:
+            marker: object = signed
+            if self._gate_log.get(activity.id) != marker:  # 仅人数变化时提示
+                self._gate_log[activity.id] = marker
+                self._log_course(
+                    course,
+                    f"活动 {activity.id} 已签 {signed}/{total}，"
+                    f"未达 {self._settings.min_headcount} 人门槛，继续等待",
+                )
+            return Outcome.DEFERRED
         if total < self._settings.small_class_max:
             if age < self._settings.small_class_delay_s:
                 wait = int(self._settings.small_class_delay_s - age)
@@ -122,7 +173,7 @@ class ActivityProcessor:
                 return Outcome.DEFERRED
             return None
         ratio = signed / total
-        if ratio <= self._settings.headcount_ratio:
+        if ratio < self._settings.headcount_ratio:
             marker = (signed, total)
             if self._headcount_log.get(activity.id) != marker:  # 仅人数变化时提示
                 self._headcount_log[activity.id] = marker
@@ -158,29 +209,90 @@ class ActivityProcessor:
             if str(activity.id) == self._push.subscribed_id:
                 self._push.stop()
             self._wait_start.pop(activity.id, None)
+            self._qr_last.pop(activity.id, None)
+            self._qr_rounds.pop(activity.id, None)
         return outcome
 
     def _sign_code(self, activity: CheckInActivity, course: Course) -> Outcome:
-        """签到码签到。"""
-        if not (activity.code and len(activity.code) == 4):
+        """签到码签到：列表字段缺失时回退到考勤入口页取码。"""
+        code = activity.code
+        if not (code and len(code) == 4):
+            code = self._api.fetch_code_from_entry() or ""
+        if not (code and len(code) == 4):
             self._log_result(
-                activity.id, course, f"活动 {activity.id} 未取到有效签到码，跳过"
+                activity.id,
+                course,
+                f"活动 {activity.id} 未取到有效签到码（服务端未下发），跳过",
             )
             return Outcome.SKIPPED
-        self._log_attempt(
-            activity.id, course, f"活动 {activity.id} 提交签到码 {activity.code}"
-        )
-        return self._report(activity.id, self._api.sign_by_code(activity.code), course)
+        self._log_attempt(activity.id, course, f"活动 {activity.id} 提交签到码 {code}")
+        return self._report(activity.id, self._api.sign_by_code(code), course)
 
     def _sign_qr(self, activity: CheckInActivity, course: Course) -> Outcome:
-        """二维码签到。"""
-        self._log_attempt(activity.id, course, f"活动 {activity.id} 提交二维码签到")
-        return self._report(activity.id, self._api.sign_by_qr(activity.id), course)
+        """二维码签到：活动 ID 直签 → 实时令牌重试。
+
+        服务端只认教师端滚动令牌（十几秒轮换一次），每次提交都得现取现解，因此
+        成功与否取决于「这一轮拿到的令牌是否仍有效」；按 ``qr_retry_interval_s``
+        节流，累计 ``qr_max_rounds`` 轮仍失败即判定活动已结束并停止重试。
+        """
+        aid = activity.id
+        now = time.time()
+        last = self._qr_last.get(aid)
+        if last is not None and now - last < self._settings.qr_retry_interval_s:
+            return Outcome.DEFERRED
+        rounds = self._qr_rounds.get(aid, 0)
+        if rounds >= self._settings.qr_max_rounds:
+            self._log_result(
+                aid,
+                course,
+                f"活动 {aid} 二维码签到失败：{self._settings.qr_max_rounds} 轮内"
+                f"未取得有效令牌",
+            )
+            return Outcome.SKIPPED
+        self._qr_rounds[aid] = rounds + 1
+        self._qr_last[aid] = now
+
+        self._api.prime_checkin_entry(course)
+        message = self._api.sign_by_qr(aid)
+        if not self._is_signed(message):
+            # 直签被拒是预期行为（活动 ID 不再是合法 state），换实时令牌再试
+            state = self._api.fetch_qr_state(course)
+            if state and state != str(aid):
+                message = self._api.sign_by_qr(state)
+        if self._is_signed(message):
+            self._log_result(aid, course, "签到成功", force=True)
+            return Outcome.SIGNED
+        if self._qr_rounds[aid] >= self._settings.qr_max_rounds:
+            self._log_result(
+                aid, course, f"活动 {aid} 二维码签到失败：{message or '无响应'}"
+            )
+            return Outcome.SKIPPED
+        if self._gate_log.get(aid) != "qr_retry":
+            self._gate_log[aid] = "qr_retry"
+            self._log_course(
+                course,
+                f"活动 {aid} 二维码未取到有效令牌（{message or '无响应'}），"
+                f"每 {int(self._settings.qr_retry_interval_s)} 秒重试，"
+                f"最多 {self._settings.qr_max_rounds} 轮",
+            )
+        return Outcome.DEFERRED
 
     def _sign_hanzi(self, activity: CheckInActivity, course: Course) -> Outcome:
-        """汉字签到：取正确顺序后按序提交。"""
-        answer = activity.code or self._api.fetch_hanzi_answer(course)
+        """汉字签到：取正确顺序后按序提交。
+
+        答案依次取自列表字段、教师端页面、考勤入口页；都没取到时提示一次并继续
+        等待（活动到期后由旧活动门禁收口），不再悄悄空转。
+        """
+        answer = activity.code
+        if not (answer and len(answer) == 4):
+            answer = self._api.fetch_hanzi_answer(course) or ""
         if not answer:
+            if self._gate_log.get(activity.id) != "hanzi_pending":
+                self._gate_log[activity.id] = "hanzi_pending"
+                self._log_course(
+                    course,
+                    f"活动 {activity.id} 暂未取得汉字答案，持续重试直至活动结束",
+                )
             return Outcome.DEFERRED
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交汉字 {answer}")
         return self._report(activity.id, self._api.sign_by_code(answer), course)
@@ -203,7 +315,7 @@ class ActivityProcessor:
         point = self._push.take_follow_point()
         if point is not None:
             lon, lat, distance = point
-            if self._is_signed(self._api.sign_by_location(lon, lat)):
+            if self._is_signed(self._api.sign_by_location(course, lon, lat)):
                 self._store.save_center(course.class_id, lon, lat)
                 self._log_signed_location(aid, course, lon, lat, distance)
                 return Outcome.SIGNED
@@ -214,7 +326,7 @@ class ActivityProcessor:
 
         cached = self._store.load_center(course.class_id)
         if cached is not None:
-            if self._is_signed(self._api.sign_by_location(*cached)):
+            if self._is_signed(self._api.sign_by_location(course, *cached)):
                 self._log_signed_location(aid, course, *cached)
                 return Outcome.SIGNED
 
@@ -223,7 +335,7 @@ class ActivityProcessor:
             self._log_result(aid, course, "定位签到失败，未取得教室坐标")
             return Outcome.SKIPPED
         lon, lat, residual = resolved
-        message = self._api.sign_by_location(lon, lat)
+        message = self._api.sign_by_location(course, lon, lat)
         if self._is_signed(message):
             self._store.save_center(course.class_id, lon, lat)
             self._log_signed_location(aid, course, lon, lat, residual)
@@ -248,12 +360,21 @@ class ActivityProcessor:
         text = f"定位签到成功：经度 {lon:.6f}，纬度 {lat:.6f}"
         if distance is not None:
             text += f"，距离 {distance:.1f} 米"
-        self._log_attempt(activity_id, course, text)
+        self._log_result(activity_id, course, text, force=True)
 
     @staticmethod
     def _is_signed(message: str | None) -> bool:
-        """服务端文案是否表示签到成功。"""
-        return bool(message) and "签到成功" in message and "未成功" not in message
+        """服务端文案是否表示签到成功。
+
+        除「签到成功」外，「已签到 / 请勿重复签到」同样是有效回执：新旧活动
+        并存或本轮之前已在别处签过时，服务端回的是这类文案。
+        """
+        if not message or "未成功" in message or "失败" in message:
+            return False
+        return any(
+            marker in message
+            for marker in ("签到成功", "已签到", "已经签到", "请勿重复签到")
+        )
 
     def _report(self, activity_id: str, message: str | None, course: Course) -> Outcome:
         """输出签到结果并归一化：把五花八门的服务端文案统一成
@@ -262,7 +383,7 @@ class ActivityProcessor:
         结果只记一次——失败不进 ``_handled`` 会每轮重试。
         """
         if self._is_signed(message):
-            self._log_result(activity_id, course, "签到成功")
+            self._log_result(activity_id, course, "签到成功", force=True)
             return Outcome.SIGNED
         self._log_result(activity_id, course, f"签到失败：{message or '无响应'}")
         return Outcome.SKIPPED

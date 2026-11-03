@@ -17,6 +17,8 @@ PERSISTABLE_FIELDS: tuple[str, ...] = (
     "small_class_max",
     "small_class_delay_s",
     "headcount_ratio",
+    "sign_delay_s",
+    "min_headcount",
     "stale_sign_minutes",
     "ws_follow_distance_m",
     "ws_wait_timeout_s",
@@ -38,6 +40,8 @@ SETTING_LIMITS: dict[str, tuple[float, float]] = {
     "small_class_max": (1, 1000),
     "small_class_delay_s": (0.0, 600.0),
     "headcount_ratio": (0.0, 1.0),
+    "sign_delay_s": (0.0, 3600.0),
+    "min_headcount": (0, 1000),
     "stale_sign_minutes": (1, 1440),
     "ws_follow_distance_m": (0.0, 10000.0),
     "ws_wait_timeout_s": (0.0, 600.0),
@@ -140,6 +144,10 @@ class Settings:
     small_class_max: int = 5
     small_class_delay_s: float = 5.0
     headcount_ratio: float = 0.20
+    # 反风控：检测到签到后延迟签到的秒数；0 表示检测到即签
+    sign_delay_s: float = 0.0
+    # 最低已签人数门禁：已签人数达到该值才签；0 表示不启用
+    min_headcount: int = 0
     # 监听时间窗（左闭右开）
     monitor_start_hour: int = 6
     monitor_end_hour: int = 23
@@ -149,6 +157,9 @@ class Settings:
     # WebSocket 跟随
     ws_follow_distance_m: float = 50.0
     ws_wait_timeout_s: float = 15.0
+    # 二维码签到：令牌是滚动令牌，只能按间隔反复现取现用，超过轮次视为活动结束
+    qr_retry_interval_s: float = 6.0
+    qr_max_rounds: int = 8
     # 定位
     location_jitter_deg: float = 0.000089
     probe_center: tuple[float, float] = (39.9042, 116.4074)

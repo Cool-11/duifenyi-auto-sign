@@ -13,7 +13,7 @@ import urllib3
 
 from . import __version__
 from .api import DuifeneApi
-from .config import IniStore
+from .config import IniStore, resolve_ini_path
 from .errors import AuthError
 from .location import LocationResolver
 from .login_watch import LoginSentinel
@@ -43,7 +43,7 @@ class Bridge:
     def __init__(self, settings: Settings) -> None:
         """组装依赖；``settings`` 会被就地加载已持久化的配置。"""
         self._settings = settings
-        self._store = IniStore(settings.ini_filename)
+        self._store = IniStore(resolve_ini_path(settings.ini_filename))
         self._load_persisted_settings()
         self._limiter = RateLimiter(settings, self._log)
         self._session = self._build_session(settings)

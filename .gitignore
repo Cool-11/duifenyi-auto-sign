@@ -1,6 +1,11 @@
 __pycache__/
 duifenyi.ini
 
+# 本地凭证与诊断产物：含 Cookie，绝不入库
+diagnose_cookies.json
+cookies*.json
+*.log
+
 # 打包产物与构建环境
 build/
 build_env/

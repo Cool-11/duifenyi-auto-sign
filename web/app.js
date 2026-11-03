@@ -105,6 +105,18 @@
           type: "number",
         },
         {
+          key: "sign_delay_s",
+          label: "检测后延迟秒数",
+          hint: "检测到签到后等待的秒数，0 为立即签",
+          type: "number",
+        },
+        {
+          key: "min_headcount",
+          label: "最低已签人数",
+          hint: "已签人数达到该值才签到，0 为不限制",
+          type: "number",
+        },
+        {
           key: "stale_sign_minutes",
           label: "旧活动上限",
           hint: "分钟，超过则跳过",
