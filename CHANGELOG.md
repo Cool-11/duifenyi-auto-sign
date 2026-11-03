@@ -29,6 +29,11 @@
 - [x] **T5｜变更**：设置面板暴露 `qr_retry_interval_s`、`qr_max_rounds`、`answer_wait_rounds`
   —— **已完成**：`PERSISTABLE_FIELDS` / `SETTING_LIMITS` / 前端「二维码与取码」分组 /
   README 参数表同步
+- [x] **T6｜测试**：四类签到全链路仿真（活动 → 门禁 → 分发 → 提交 → 回执 → 去重）
+  —— **已完成**：`tests/test_pipeline.py`（8 例）；四类各跑通一遍 `process()`，
+  并覆盖“已出勤跳过”“签到成功后不重复”“定位无坐标跳过”“未知类型跳过”
+- [ ] **外部依赖（非代码任务）**：真机验收——需有效登录凭证与进行中的活动，
+  本机 Cookie 已过期且无活动，故未执行；用 `diagnose_sign.py` 一条命令即可补测
 
 ### 新增
 
@@ -38,6 +43,8 @@
   二维码「直签 → 令牌重投 → 轮次用尽」
 - **新增** `tests/test_settings.py`：`web/app.js` 表单 key、`PERSISTABLE_FIELDS`、
   `SETTING_LIMITS` 三方一致性 + 新参数的校验与落盘
+- **新增** `tests/test_pipeline.py`：以假传输层跑完四类签到的完整调度链路，
+  断言提交参数（`checkincode` / `state` 令牌 / 经纬度）与去重行为
 - **新增** `diagnose_sign.py`：登录态 → 课程 → 活动字段 ✓/✗ 核对 → 人数 → 签到码探针 →
   二维码直签与令牌 → 汉字/取码来源 → 定位远场测距，共八节
 - **新增** `ActivityProcessor._wait_answer()`：取不到码/答案时的统一收口逻辑
@@ -60,9 +67,10 @@
 
 ### 验证
 
-- `python -m unittest discover -s tests -v` → **33 passed**
+- `python -m unittest discover -s tests -v` → **41 passed**
 - `python -m compileall duifene main.py diagnose_sign.py diagnose_location.py tests` → 通过
-- `python diagnose_sign.py --help` 正常输出用法
+- `python diagnose_sign.py --help` 正常输出用法；`--reuse` 在 Cookie 失效时给出明确引导
+- 启动冒烟：`python main.py` 进程持续存活、stderr 为空（GUI 正常拉起，未登录故未签到）
 - 编辑器静态检查（basedpyright）对本次改动零报错（仅 `config.py` 存在既有告警）
 
 ---
