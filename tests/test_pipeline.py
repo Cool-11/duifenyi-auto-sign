@@ -63,6 +63,7 @@ class StubApi:
         self.limiter = StubLimiter()
         self.codes: list[str] = []
         self.qr_states: list[str] = []
+        self.qr_error = ""
         self.locations: list[tuple[Course, float, float]] = []
         self.code_reply = "签到成功!"
         self.qr_replies = ["参数错误,请重新尝试", "签到成功!"]

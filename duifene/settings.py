@@ -173,6 +173,8 @@ class Settings:
     probe_center: tuple[float, float] = (39.9042, 116.4074)
     probe_radius_m: float = 800_000.0
     probe_azimuths: int = 6
+    # 探测间隔：每次探测都是一次签到请求，连发会被服务端判为「过于频繁」
+    probe_interval_s: float = 4.0
     probe_min_samples: int = 3
     probe_max_residual_m: float = 50.0
     meters_per_deg_lat: float = 111132.92

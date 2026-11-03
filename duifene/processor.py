@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-from . import qrdecode
 from .api import DuifeneApi
 from .config import IniStore
 from .errors import LogFn, RateLimited
@@ -224,27 +223,29 @@ class ActivityProcessor:
         if not (code and len(code) == 4):
             code = self._api.fetch_code_from_entry() or ""
         if not (code and len(code) == 4):
-            return self._wait_answer(activity, course, "签到码")
+            return self._wait_answer(activity, course, "签到码", "服务端未下发")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交签到码 {code}")
         return self._report(activity.id, self._api.sign_by_code(code), course)
 
     def _wait_answer(
-        self, activity: CheckInActivity, course: Course, what: str
+        self, activity: CheckInActivity, course: Course, what: str, hint: str = ""
     ) -> Outcome:
         """取不到签到码／汉字答案时的收口：先按轮次重试，超过上限再明确放弃。
 
         服务端可能迟迟不下发码，直接判失败会误伤；但无限重试只会每轮刷屏并拖到
         活动过期，因此用 ``answer_wait_rounds`` 卡住上限，结束时给出确定结论。
+        ``hint`` 用一句话说明「为什么拿不到」，避免用户以为是程序 bug。
         """
         aid = activity.id
         rounds = self._answer_rounds.get(aid, 0) + 1
         self._answer_rounds[aid] = rounds
         limit = self._settings.answer_wait_rounds
         if rounds >= limit:
+            tail = f"（{hint}）" if hint else ""
             self._log_result(
                 aid,
                 course,
-                f"活动 {aid} 未取到有效{what}（已重试 {rounds} 轮），放弃",
+                f"活动 {aid} 未取到有效{what}{tail}，已重试 {rounds} 轮，放弃",
             )
             return Outcome.SKIPPED
         marker = f"{what}_pending"
@@ -281,22 +282,19 @@ class ActivityProcessor:
         self._qr_last[aid] = now
 
         self._api.prime_checkin_entry(course)
-        message = self._api.sign_by_qr(aid)
+        # 首轮才试「活动 ID 直签」：服务端已不认它，重复发只会白白消耗限流额度
+        message = "" if rounds else self._api.sign_by_qr(aid)
         if not self._is_signed(message):
-            # 直签被拒是预期行为（活动 ID 不再是合法 state），换实时令牌再试
             state = self._api.fetch_qr_state(course)
             if state and state != str(aid):
                 message = self._api.sign_by_qr(state)
+            else:
+                # 没取到令牌时，用取图/解码的具体原因替代含糊的「参数错误」
+                message = self._api.qr_error or message or "未取到令牌"
         if self._is_signed(message):
             self._log_result(aid, course, "签到成功", force=True)
             return Outcome.SIGNED
-        # 失败原因分两类：本机缺解码依赖（装了就好的事）与服务端未给令牌（只能等）
         reason = message or "无响应"
-        if not qrdecode.available():
-            reason = (
-                "本机缺少 Pillow/pyzbar，二维码无法解码；"
-                "请执行 pip install -r requirements.txt"
-            )
         if self._qr_rounds[aid] >= self._settings.qr_max_rounds:
             self._log_result(
                 aid, course, f"活动 {aid} 二维码签到失败：{reason}"
@@ -322,7 +320,7 @@ class ActivityProcessor:
         if not (answer and len(answer) == 4):
             answer = self._api.fetch_hanzi_answer(course) or ""
         if not answer:
-            return self._wait_answer(activity, course, "汉字答案")
+            return self._wait_answer(activity, course, "汉字答案", "学生端无法取得")
         self._log_attempt(activity.id, course, f"活动 {activity.id} 提交汉字 {answer}")
         return self._report(activity.id, self._api.sign_by_code(answer), course)
 
@@ -361,7 +359,14 @@ class ActivityProcessor:
 
         resolved = self._resolver.resolve(course)
         if resolved is None:
-            self._log_result(aid, course, "定位签到失败，未取得教室坐标")
+            # 反推被限流打断属「暂时性」，不能判死；静默结束后应继续重试
+            if self._api.limiter.is_blocking():
+                left = int(self._api.limiter.remaining())
+                self._log_course(
+                    course, f"活动 {aid} 定位反推被限流打断，{left} 秒后重试"
+                )
+                return Outcome.DEFERRED
+            self._log_result(aid, course, f"活动 {aid} 定位签到失败，未取得教室坐标")
             return Outcome.SKIPPED
         lon, lat, residual = resolved
         message = self._api.sign_by_location(course, lon, lat)

@@ -6,7 +6,7 @@ import json
 import random
 import re
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -29,9 +29,16 @@ def _strip_data_uri(value: str) -> str:
     if value.startswith("data:"):
         value = value.partition(",")[2]
     return "".join(value.split())
-# 二维码内容里的令牌：state=xxx 为常见形态，G.aspx?OnlyId= 为短链形态
-QR_STATE_RE = re.compile(r"[?&]state=([^\s&'\"#]+)")
-QR_ONLYID_RE = re.compile(r"[?&]OnlyId=([^\s&'\"#]+)")
+
+
+def _brief(text: str, limit: int = 60) -> str:
+    """压成单行短文本，用于把服务端原话带进日志。"""
+    return " ".join(str(text).split())[:limit]
+# 二维码内容里的令牌：state= 最常见，其余为兼容形态；G.aspx?OnlyId= 为短链形态
+QR_PARAM_RE = re.compile(
+    r"[?&](state|key|code|token|sign|signid|id)=([^\s&'\"#]+)", re.IGNORECASE
+)
+QR_ONLYID_RE = re.compile(r"[?&]OnlyId=([^\s&'\"#]+)", re.IGNORECASE)
 # 图像响应中的 base64 主体（data URI 前缀另作处理）
 BASE64_RE = re.compile(r"data:image/[a-zA-Z+]+;base64,([A-Za-z0-9+/=\s]+)")
 RAW_BASE64_RE = re.compile(r"[A-Za-z0-9+/=]{200,}")
@@ -61,6 +68,8 @@ class DuifeneApi:
         self._user_id: str | None = None
         # 已预访过考勤入口的教学班：预访一次即可，避免每轮重复请求
         self._primed_class: str | None = None
+        # 最近一次取二维码令牌的失败原因，供上层原样打印，避免「只报参数错误」
+        self._last_qr_error = ""
 
     @property
     def proxies(self) -> dict[str, str] | None:
@@ -81,6 +90,11 @@ class DuifeneApi:
     def limiter(self) -> RateLimiter:
         """限流状态机。"""
         return self._limiter
+
+    @property
+    def qr_error(self) -> str:
+        """最近一次取二维码令牌失败的原因（成功时为空串）。"""
+        return self._last_qr_error
 
     def _url(self, path: str) -> str:
         """拼接完整 URL。"""
@@ -393,8 +407,10 @@ class DuifeneApi:
         登录」，那会把真正的失败原因藏起来。
         """
         self._limiter.raise_if_blocking()
+        # 令牌是 base64 形态，可能含 + / =，不编码会被服务端截断参数
+        encoded = quote(str(state), safe="")
         response = self._session.get(
-            self._url(f"/_CheckIn/MB/QrCodeCheckOK.aspx?state={state}"),
+            self._url(f"/_CheckIn/MB/QrCodeCheckOK.aspx?state={encoded}"),
             timeout=self._settings.request_timeout_s,
         )
         self._guard_limit_text(response)
@@ -406,8 +422,11 @@ class DuifeneApi:
     def fetch_qr_state(self, course: Course) -> str | None:
         """取教师端当前实时二维码并解码出 state 令牌；失败返回 None。
 
-        令牌每十几秒轮换，只能现取现用，无法缓存。
+        令牌每十几秒轮换，只能现取现用。失败原因写入 :attr:`qr_error`：活动已结束、
+        响应无图、解码失败、内容无令牌这四种处置完全不同，笼统报「参数错误」会把
+        真正的环节藏起来。
         """
+        self._last_qr_error = ""
         try:
             response = self._session.post(
                 self._url("/_CheckIn/CheckIn.ashx"),
@@ -415,39 +434,61 @@ class DuifeneApi:
                 headers={**AJAX_HEADERS, "Referer": STUDENT_REFERER},
                 timeout=self._settings.request_timeout_s,
             )
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as exc:
+            self._last_qr_error = f"取图请求异常（{exc.__class__.__name__}）"
             return None
         if response.status_code != 200:
+            self._last_qr_error = f"取图 HTTP {response.status_code}"
             return None
         image = self._extract_base64_image(response.text)
         if not image:
+            self._last_qr_error = f"取图失败：{_brief(response.text)}"
             return None
         try:
             content = qrdecode.decode_image_base64(image)
         except qrdecode.QrDecodeUnavailable:
+            self._last_qr_error = "本机缺少 Pillow/pyzbar，无法解码二维码"
             return None
         if not content:
+            self._last_qr_error = "图片解码失败（未识别到二维码）"
             return None
-        return self._state_from_qr_content(content)
+        state = self._state_from_qr_content(content)
+        if state is None:
+            self._last_qr_error = f"二维码内容无令牌：{_brief(content, 80)}"
+        return state
 
     def _state_from_qr_content(self, content: str) -> str | None:
-        """从二维码文本解析 state；``G.aspx?OnlyId=`` 短链需跟随一次 302。"""
-        match = QR_STATE_RE.search(content)
+        """从二维码文本解析令牌。
+
+        兼容 ``?state=`` / ``?key=`` / ``?code=`` 等键名，以及不含 URL 的裸令牌；
+        ``G.aspx?OnlyId=`` 短链需跟随一次 302 取其 ``Location``。
+        """
+        match = QR_PARAM_RE.search(content)
         if match:
-            return unquote(match.group(1))
+            return unquote(match.group(2))
         match = QR_ONLYID_RE.search(content)
-        if match is None:
-            return None
-        try:
-            response = self._session.get(
-                self._url(f"/G.aspx?OnlyId={match.group(1)}"),
-                allow_redirects=False,
-                timeout=self._settings.request_timeout_s,
-            )
-        except requests.exceptions.RequestException:
-            return None
-        inner = QR_STATE_RE.search(response.headers.get("Location", ""))
-        return unquote(inner.group(1)) if inner else None
+        if match is not None:
+            try:
+                response = self._session.get(
+                    self._url(f"/G.aspx?OnlyId={match.group(1)}"),
+                    allow_redirects=False,
+                    timeout=self._settings.request_timeout_s,
+                )
+            except requests.exceptions.RequestException:
+                return None
+            inner = QR_PARAM_RE.search(response.headers.get("Location", ""))
+            return unquote(inner.group(2)) if inner else None
+        text = content.strip()
+        if (
+            text
+            and "://" not in text
+            and "?" not in text
+            and "/" not in text
+            and " " not in text
+            and len(text) >= 8
+        ):
+            return text
+        return None
 
     @staticmethod
     def _extract_base64_image(text: str) -> str | None:

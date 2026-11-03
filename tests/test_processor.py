@@ -56,6 +56,7 @@ class StubApi:
         self.limiter = StubLimiter()
         self.codes: list[str] = []
         self.qr_states: list[str] = []
+        self.qr_error = ""
         self.entry_code: str | None = None
         self.hanzi: str | None = None
         self.qr_token: str | None = "TOKEN"

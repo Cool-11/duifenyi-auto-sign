@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import requests
 
@@ -34,6 +35,12 @@ class LocationResolver:
         center_lat, center_lon = self._settings.probe_center
         samples: list[tuple[float, float, float]] = []
         for index in range(self._settings.probe_azimuths):
+            # 每次探测都是一次真实签到请求，服务端按「最后一次签到请求」计时，
+            # 连发必然触发「过于频繁」并导致整场静默——必须限速，且已在静默时停手。
+            if self._api.limiter.is_blocking():
+                break
+            if index:
+                time.sleep(self._settings.probe_interval_s)
             angle = 2 * math.pi * index / self._settings.probe_azimuths + 0.1
             dlat = (
                 self._settings.probe_radius_m

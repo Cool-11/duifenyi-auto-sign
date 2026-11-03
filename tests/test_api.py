@@ -169,6 +169,27 @@ class QrParsingTest(unittest.TestCase):
         )
         self.assertEqual(api.sign_by_qr("2557759"), "参数错误,请重新尝试")
 
+    def test_sign_by_qr_url_encodes_token(self) -> None:
+        """令牌含 + / = 时必须编码，否则服务端会把参数截断成「参数错误」。"""
+        api = make_api(
+            {"/QrCodeCheckOK.aspx": FakeResponse(text='<div id="DivOK">ok</div>')}
+        )
+        api.sign_by_qr("a+b/c=")
+        url = api._session.calls[-1][1]
+        self.assertIn("state=a%2Bb%2Fc%3D", url)
+
+    def test_state_from_key_param_and_bare_token(self) -> None:
+        api = make_api()
+        self.assertEqual(api._state_from_qr_content("https://x/G.aspx?key=K1"), "K1")
+        self.assertEqual(api._state_from_qr_content("BARE_TOKEN_123"), "BARE_TOKEN_123")
+
+    def test_fetch_qr_state_reports_reason(self) -> None:
+        api = make_api(
+            {"/CheckIn.ashx": FakeResponse(text='{"msg":-1,"msgbox":"签到已结束！"}')}
+        )
+        self.assertIsNone(api.fetch_qr_state(COURSE))
+        self.assertIn("签到已结束", api.qr_error)
+
 
 class CodeAndHanziSourceTest(unittest.TestCase):
     """签到码 / 汉字答案的三级取码兜底。"""
