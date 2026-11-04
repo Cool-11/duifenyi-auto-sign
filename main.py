@@ -9,6 +9,7 @@ import webview
 
 from duifene import __version__
 from duifene.bridge import Bridge
+from duifene.runlog import FileLog, default_log_path, install_crash_hooks
 from duifene.settings import Settings
 
 # 窗口与加载覆盖层共用的底色，保证揭幕时无跳色。
@@ -134,6 +135,9 @@ def _install_loading_overlay(window: webview.Window) -> None:
 
 def main() -> None:
     """创建窗口并进入 pywebview 事件循环。"""
+    # windowed 构建没有 stderr：先把未捕获异常接到日志文件，否则启动期崩溃
+    # 表现为「双击没反应」，用户与开发者都拿不到任何信息。
+    install_crash_hooks(FileLog(default_log_path()))
     if not _has_webview2():
         _warn_missing_webview2()
         return

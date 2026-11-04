@@ -10,21 +10,15 @@ from urllib.parse import urlparse
 PERSISTABLE_FIELDS: tuple[str, ...] = (
     "poll_min_s",
     "poll_max_s",
-    "login_check_interval_s",
     "error_backoff_max_s",
     "monitor_start_hour",
     "monitor_end_hour",
     "small_class_max",
     "small_class_delay_s",
     "headcount_ratio",
+    "headcount_deadline_s",
     "sign_delay_s",
-    "min_headcount",
     "stale_sign_minutes",
-    "ws_follow_distance_m",
-    "ws_wait_timeout_s",
-    "qr_retry_interval_s",
-    "qr_max_rounds",
-    "answer_wait_rounds",
     "cooldown_seconds",
     "proxy_url",
 )
@@ -36,21 +30,15 @@ DERIVED_FIELDS: tuple[str, ...] = ("verify_tls",)
 SETTING_LIMITS: dict[str, tuple[float, float]] = {
     "poll_min_s": (0.5, 60.0),
     "poll_max_s": (0.5, 300.0),
-    "login_check_interval_s": (5.0, 3600.0),
     "error_backoff_max_s": (5.0, 3600.0),
     "monitor_start_hour": (0, 24),
     "monitor_end_hour": (0, 24),
     "small_class_max": (1, 1000),
     "small_class_delay_s": (0.0, 600.0),
     "headcount_ratio": (0.0, 1.0),
-    "sign_delay_s": (0.0, 3600.0),
-    "min_headcount": (0, 1000),
+    "headcount_deadline_s": (0.0, 1800.0),
+    "sign_delay_s": (0.0, 600.0),
     "stale_sign_minutes": (1, 1440),
-    "ws_follow_distance_m": (0.0, 10000.0),
-    "ws_wait_timeout_s": (0.0, 600.0),
-    "qr_retry_interval_s": (2.0, 60.0),
-    "qr_max_rounds": (1, 60),
-    "answer_wait_rounds": (1, 240),
     "cooldown_seconds": (0.0, 3600.0),
 }
 
@@ -77,6 +65,17 @@ def _coerce(current: Any, raw: Any) -> tuple[bool, Any]:
     return True, str(raw)
 
 
+def _normalize_proxy(raw: str) -> str:
+    """把代理地址规整为 requests 可用的 URL；空串表示直连。"""
+    text = raw.strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        # 缺 scheme：按抓包工具常见约定补 http://
+        text = "http://" + text
+    return text
+
+
 def _check_consistency(values: Mapping[str, Any]) -> str:
     """跨字段一致性校验；返回错误文案，通过时返回空串。"""
     if values["poll_min_s"] > values["poll_max_s"]:
@@ -92,27 +91,11 @@ def _check_consistency(values: Mapping[str, Any]) -> str:
 def _normalize(values: dict[str, Any]) -> None:
     """联动归一化（就地修改）。
 
-    证书校验已不在前端暴露，其取值完全由代理决定：配置代理即视为抓包调试
-    场景，其证书通常无法通过系统信任链校验，故关闭校验；无代理时恢复为安全
-    的默认开启，避免清空代理后残留 False 且无从恢复。
-
-    代理地址统一补全 scheme：requests 要求形如 ``http://host:port``，缺 scheme
-    时会在发请求时抛 ProxySchemeUnknown，表现为「保存成功但代理无效」。用户常
-    只填 ``127.0.0.1:8080``，这里补成 ``http://127.0.0.1:8080``。
+    证书校验不在前端暴露，取值完全由代理决定：配置代理即视为抓包调试场景，
+    其证书通常无法通过系统信任链校验，故关闭校验；无代理时恢复为安全默认。
     """
     values["proxy_url"] = _normalize_proxy(str(values.get("proxy_url", "")).strip())
     values["verify_tls"] = not values["proxy_url"]
-
-
-def _normalize_proxy(raw: str) -> str:
-    """把代理地址规整为 requests 可用的 URL；空串表示直连。"""
-    text = raw.strip()
-    if not text:
-        return ""
-    if "://" not in text:
-        # 缺 scheme：按抓包工具常见约定补 http://
-        text = "http://" + text
-    return text
 
 
 @dataclass
@@ -123,64 +106,50 @@ class Settings:
     CPython 下天然原子，足以满足单写多读场景）。
     """
 
-    host: str = "https://www.duifene.com"
-    hub_url: str = "https://wsdf.duifene.com/messageHub"
-    user_agent: str = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
-        "MicroMessenger/8.0.40(0x1800282a) NetType/WIFI Language/zh_CN "
-    )
+    # App 接口域名：签到数据、四类签到提交、教室坐标全部走它
+    app_host: str = "https://dfapp.duifene.com"
+    user_agent: str = "okhttp/4.12.0"
     ini_filename: str = "duifenyi.ini"
-    # 正式运行不启用明文代理、开启 TLS 校验。抓包调试时在设置中显式填写
-    # 代理地址并关闭校验。
     proxy_url: str = ""
     verify_tls: bool = True
-    request_timeout_s: float = 10.0
+    request_timeout_s: float = 12.0
+
     # 轮询：区间内随机，避免固定节律被风控识别
     poll_min_s: float = 3.0
     poll_max_s: float = 5.0
-    login_check_interval_s: float = 30.0
-    # 连续异常时的退避上限（秒）：异常越多等待越久，避免异常风暴下空转刷屏
+    # 连续异常时的退避上限（秒）
     error_backoff_max_s: float = 60.0
-    # 活动筛选
-    sign_end_offset_hours: int = 24
+
+    # 活动筛选：创建超过该分钟数的活动不再处理
     stale_sign_minutes: int = 30
-    future_tolerance_s: float = 300.0
-    # 人数门禁
+    # 检测到签到后延迟多少秒再提交（0=立即），用于规避「秒签」风控
+    sign_delay_s: float = 0.0
+    # 兜底：活动创建后超过该秒数即无视人数门槛直接签，保证不因人数接口异常而错过
+    headcount_deadline_s: float = 45.0
+
+    # 人数门禁：已签人数占总人数比例达到该值才签（0 表示不启用）
+    headcount_ratio: float = 0.2
+    # 小班直签：总人数低于该值且活动创建满 small_class_delay_s 秒即签
     small_class_max: int = 5
     small_class_delay_s: float = 5.0
-    headcount_ratio: float = 0.20
-    # 反风控：检测到签到后延迟签到的秒数；0 表示检测到即签
-    sign_delay_s: float = 0.0
-    # 最低已签人数门禁：已签人数达到该值才签；0 表示不启用
-    min_headcount: int = 0
+
     # 监听时间窗（左闭右开）；0–24 表示全天轮询
     monitor_start_hour: int = 0
     monitor_end_hour: int = 24
-    # 限流：服务端只说「过于频繁」，实测冷却窗口只有几秒；静默过久会吃掉整场活动
-    cooldown_seconds: float = 10.0
-    rate_limit_markers: tuple[str, ...] = ("过于频繁", "频繁")
-    # WebSocket 跟随
-    ws_follow_distance_m: float = 50.0
-    # 等待他人推送的时长：等太久会挤掉后续反推的时间（活动窗口常只有 30–60 秒）
-    ws_wait_timeout_s: float = 10.0
-    # 二维码签到：令牌是滚动令牌，只能按间隔反复现取现用，超过轮次视为活动结束
-    qr_retry_interval_s: float = 6.0
-    qr_max_rounds: int = 8
-    # 取码/取答案的等待上限：服务端未下发签到码或汉字答案时的重试轮次
-    answer_wait_rounds: int = 12
-    # 定位
-    location_jitter_deg: float = 0.000089
-    probe_center: tuple[float, float] = (39.9042, 116.4074)
-    # 探测半径：只需远大于教室判定范围即可；800km 的距离值过于异常，易被判风控
-    probe_radius_m: float = 5_000.0
-    probe_azimuths: int = 4
-    # 探测间隔：每次探测都是一次签到请求，连发会被服务端判为「过于频繁」
-    probe_interval_s: float = 3.0
-    probe_min_samples: int = 3
-    probe_max_residual_m: float = 50.0
-    meters_per_deg_lat: float = 111132.92
-    meters_per_deg_lon: float = 111320.0
+
+    # 命中限流后的静默秒数
+    cooldown_seconds: float = 15.0
+    rate_limit_markers: tuple[str, ...] = ("过于频繁", "请求频繁", "频繁")
+
+    # 二维码/定位的重试节拍（内部常量，不暴露到界面）
+    qr_retry_interval_s: float = 5.0
+    location_retry_interval_s: float = 5.0
+    # 取不到签到码/汉字时，同一活动最多提示一次，之后静默重试
+    manual_code_ttl_s: float = 300.0
+
+    # 定位签到的随机偏移半径（米）：落在教室范围内即可，避免每次都同一坐标
+    location_offset_min_m: float = 3.0
+    location_offset_max_m: float = 18.0
 
     @property
     def proxies(self) -> dict[str, str] | None:
@@ -203,7 +172,7 @@ class Settings:
 
         仅接受 :data:`PERSISTABLE_FIELDS` 中的字段；逐字段做类型转换与范围
         校验，再整体做跨字段一致性校验与派生字段归一化，全部通过后才写入，
-        保证原子性。派生字段（如 :data:`DERIVED_FIELDS`）不允许直接设置。
+        保证原子性。
         """
         staged: dict[str, Any] = self.persistable_values()
         for name, raw in patch.items():

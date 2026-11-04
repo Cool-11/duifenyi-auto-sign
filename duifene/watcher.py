@@ -8,15 +8,14 @@ import time
 from datetime import datetime
 
 from .api import DuifeneApi
-from .errors import LogFn
+from .errors import AppApiError, AuthError, LogFn
 from .models import Course
 from .processor import ActivityProcessor
-from .push import PushMonitor
 from .settings import Settings
 
 
 class Watcher:
-    """在后台 daemon 线程中驱动签到监控循环，不依赖任何 GUI 框架。
+    """在后台 daemon 线程中轮询当前课程的签到活动。
 
     ``log`` 由外壳实现，需保证线程安全（watcher 线程绝不触碰 webview）。
     """
@@ -26,20 +25,18 @@ class Watcher:
         settings: Settings,
         api: DuifeneApi,
         processor: ActivityProcessor,
-        push: PushMonitor,
         log: LogFn,
     ) -> None:
         self._settings = settings
         self._api = api
         self._processor = processor
-        self._push = push
         self._log = log
         self._course: Course | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._consecutive_errors = 0
         self._last_tick_ts = 0.0
-        # 时间窗内外状态：仅在跨越边界时记一条日志，避免窗外每轮刷屏。
+        # 时间窗内外状态：仅在跨越边界时记一条日志，避免窗外每轮刷屏
         self._in_window: bool | None = None
         self._lock = threading.Lock()
 
@@ -54,12 +51,14 @@ class Watcher:
         return self._last_tick_ts
 
     def set_course(self, course: Course | None) -> None:
-        """设置当前监控的课程；``None`` 表示清空（登录失败回滚等场景）。"""
+        """设置当前监控的课程；``None`` 表示清空。"""
         with self._lock:
             self._course = course
 
     def start(self) -> None:
         """启动监控线程（若已在运行则先停止再重启）。"""
+        if not self._api.is_authenticated:
+            raise AuthError("登录状态已失效，请重新登录账号")
         self.stop()
         self._stop.clear()
         self._processor.reset()
@@ -74,16 +73,15 @@ class Watcher:
         self._thread.start()
 
     def stop(self) -> None:
-        """停止监控：置停止标志、释放 WebSocket 并等待线程退出。
+        """停止监控：置停止标志并等待线程退出。
 
-        仅在确实处于运行态时记录停止日志——``start`` 会先调 ``stop`` 以
-        支持重启，若无条件记日志，每次启动都会多出一条「已停止监听」。
+        仅在确实处于运行态时记录停止日志——``start`` 会先调 ``stop`` 以支持
+        重启，若无条件记日志，每次启动都会多出一条「已停止监听」。
         """
         was_running = self.is_running
         with self._lock:
             course = self._course
         self._stop.set()
-        self._push.stop()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
@@ -110,11 +108,17 @@ class Watcher:
         )
 
     def _run(self) -> None:
-        """循环主体：任何异常都不得杀死线程。"""
+        """循环主体：认证失效即停止，其它异常按退避重试。"""
         while not self._stop.is_set():
             try:
                 self._tick()
-            except Exception as exc:  # noqa: BLE001 - 兜底：单轮失败不终止监控
+            except AuthError as exc:
+                with self._lock:
+                    course = self._course
+                self._log(self._course_prefix(course, f"{exc!s}，监听已停止"))
+                self._stop.set()
+                break
+            except Exception as exc:  # noqa: BLE001 - 单轮失败不终止监控
                 self._consecutive_errors += 1
                 backoff = min(
                     self._settings.poll_min_s * (2 ** self._consecutive_errors),
@@ -136,18 +140,16 @@ class Watcher:
             )
 
     def _tick(self) -> None:
-        """一轮监控：时间窗门禁 → 拉取列表 → 逐条处理。
+        """一轮监控：时间窗门禁 → 读取当前签到 → 交给处理器。
 
-        登录态探测不在此处，由常驻哨兵线程负责（见
-        :class:`duifene.login_watch.LoginSentinel`），与是否在监听无关。
-
-        无事件时不产生日志：持续监控的「存活」由前端状态行的最近轮询时间
-        行内刷新体现，日志只记录真实事件，避免空轮询刷屏；时间窗边界也只在
-        跨越时记一条。
+        无活动时不产生日志：持续监控的「存活」由前端状态行的最近轮询时间体现，
+        日志只记录真实事件，避免空轮询刷屏。
         """
         self._last_tick_ts = time.time()
         if self._stop.is_set():
             return
+        if not self._api.is_authenticated:
+            raise AuthError("登录状态已失效，请重新登录账号")
         with self._lock:
             course = self._course
         in_window = self._in_monitor_window()
@@ -165,24 +167,19 @@ class Watcher:
                     else f"当前不在监听时间窗（{window}），暂不轮询",
                 )
             )
-        if not in_window:
+        if not in_window or course is None:
             return
-        if course is None:
+        try:
+            activity = self._api.fetch_active_activity(course.course_id)
+        except AppApiError as exc:
+            # 单轮接口抖动不升级为「监控异常」，退避由外层循环负责
+            self._consecutive_errors += 1
+            raise AppApiError(f"读取签到活动失败：{exc!s}") from exc
+        if activity is None:
+            self._consecutive_errors = 0
             return
-        user_id = self._api.fetch_user_id()
-        if not user_id:
-            self._log(self._course_prefix(course, "获取学生ID失败，请重新登录"))
-            return
-        activities = self._api.fetch_activities(course.class_id, user_id)
-        if activities is None:
-            self._log(self._course_prefix(course, "获取签到列表失败，稍后重试"))
-            return
-        for activity in activities:
-            # 逐条兜底：某条活动处理异常不得中断本轮其余活动
-            try:
-                self._processor.process(activity, course)
-            except Exception as exc:  # noqa: BLE001
-                self._log(
-                    self._course_prefix(course, f"活动 {activity.id} 处理异常（{exc!s}）")
-                )
-        self._consecutive_errors = 0  # 一轮完整结束即重置退避
+        self._processor.process(activity, course)
+        self._consecutive_errors = 0
+
+
+__all__ = ["Watcher"]

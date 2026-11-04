@@ -96,53 +96,52 @@
 
           <div class="notice-banner hidden" id="noticeBanner"></div>
 
-          <div class="seg-tabs" id="loginTabs">
-            <button class="chip seg active" data-tab="link">微信链接</button>
-            <button class="chip seg" data-tab="pwd">账号密码</button>
-          </div>
+          <label class="field-label" for="userInput">对分易账号</label>
+          <input
+            class="input"
+            id="userInput"
+            type="text"
+            placeholder="手机号 / 学号"
+            autocomplete="username"
+          />
 
-          <div class="tab-pane" id="paneLink">
-            <label class="field-label" for="linkInput">登录链接</label>
-            <input
-              class="input"
-              id="linkInput"
-              type="text"
-              placeholder="粘贴微信回调链接（含 code=...）"
-            />
-            <button class="btn btn-primary btn-block" id="loginLinkBtn">
-              <span class="spinner hidden" id="linkSpinner"></span>
-              <span>登录</span>
-            </button>
-          </div>
+          <label class="field-label" for="passInput">密码</label>
+          <input
+            class="input"
+            id="passInput"
+            type="password"
+            placeholder="对分易登录密码"
+            autocomplete="current-password"
+          />
 
-          <div class="tab-pane hidden" id="panePwd">
-            <label class="field-label" for="userInput">账号</label>
-            <input
-              class="input"
-              id="userInput"
-              type="text"
-              placeholder="对分易账号"
-            />
-            <label class="field-label" for="passInput">密码</label>
-            <input
-              class="input"
-              id="passInput"
-              type="password"
-              placeholder="密码"
-            />
-            <button class="btn btn-primary btn-block" id="loginPwdBtn">
-              <span class="spinner hidden" id="pwdSpinner"></span>
-              <span>登录</span>
-            </button>
-            <p class="login-hint">账号密码不支持二维码签到</p>
-          </div>
+          <label class="remember-row" for="rememberChk">
+            <input type="checkbox" id="rememberChk" checked />
+            <span>记住账号密码（仅本机，系统加密保存）</span>
+          </label>
+
+          <button class="btn btn-primary btn-block" id="loginBtn">
+            <span class="spinner hidden" id="loginSpinner"></span>
+            <span>登录</span>
+          </button>
+          <button class="btn btn-default btn-block" id="logoutBtn" disabled>
+            退出登录
+          </button>
+
+          <p class="login-hint">
+            登录态会自动续期，无需反复登录；换电脑或改密码后重新登录一次即可。
+          </p>
         </section>
 
         <section class="panel panel-help">
           <div class="panel-head">
-            <h2 class="panel-title">微信登录说明</h2>
+            <h2 class="panel-title">使用步骤</h2>
           </div>
-          <ol class="help-steps" id="helpSteps"></ol>
+          <ol class="help-steps" id="helpSteps">
+            <li>用对分易账号密码登录，课程列表会自动加载。</li>
+            <li>在右栏「监控课程」里选中要盯的那门课。</li>
+            <li>点「开始监听」，程序每 3–5 秒检查一次是否有新签到。</li>
+            <li>检测到签到会自动提交，结果写进右侧日志。</li>
+          </ol>
         </section>
       </aside>
 

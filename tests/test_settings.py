@@ -35,36 +35,53 @@ class SettingsConsistencyTest(unittest.TestCase):
 
 
 class ApplyRoundTripTest(unittest.TestCase):
-    """新增的三个二维码/取码参数应可正常校验并写回。"""
+    """门禁与兜底参数应可正常校验并写回。"""
 
     def test_apply_accepts_new_fields(self) -> None:
         settings = Settings()
         error = settings.apply(
             {
-                "qr_retry_interval_s": "10",
-                "qr_max_rounds": "6",
-                "answer_wait_rounds": "20",
+                "headcount_ratio": "0.35",
+                "headcount_deadline_s": "30",
+                "sign_delay_s": "8",
             }
         )
         self.assertEqual(error, "")
-        self.assertEqual(settings.qr_retry_interval_s, 10.0)
-        self.assertEqual(settings.qr_max_rounds, 6)
-        self.assertEqual(settings.answer_wait_rounds, 20)
+        self.assertAlmostEqual(settings.headcount_ratio, 0.35)
+        self.assertAlmostEqual(settings.headcount_deadline_s, 30.0)
+        self.assertAlmostEqual(settings.sign_delay_s, 8.0)
 
     def test_apply_rejects_out_of_range(self) -> None:
         settings = Settings()
-        error = settings.apply({"qr_max_rounds": "0"})
+        error = settings.apply({"headcount_ratio": "1.5"})
         self.assertNotEqual(error, "")
-        self.assertEqual(settings.qr_max_rounds, 8)  # 失败不落地
+        self.assertAlmostEqual(settings.headcount_ratio, 0.2)  # 失败不落地
 
-    def test_persistable_values_contain_new_fields(self) -> None:
+    def test_apply_rejects_unknown_field(self) -> None:
+        settings = Settings()
+        self.assertNotEqual(settings.apply({"qr_max_rounds": "5"}), "")
+
+    def test_apply_rejects_inverted_poll_range(self) -> None:
+        settings = Settings()
+        error = settings.apply({"poll_min_s": "9", "poll_max_s": "4"})
+        self.assertNotEqual(error, "")
+
+    def test_proxy_switches_tls_verification(self) -> None:
+        settings = Settings()
+        self.assertEqual(settings.apply({"proxy_url": "127.0.0.1:8080"}), "")
+        self.assertEqual(settings.proxy_url, "http://127.0.0.1:8080")
+        self.assertFalse(settings.verify_tls)
+        self.assertEqual(settings.apply({"proxy_url": ""}), "")
+        self.assertTrue(settings.verify_tls)
+
+    def test_persistable_values_are_stable(self) -> None:
         values = Settings().persistable_values()
-        for key in ("qr_retry_interval_s", "qr_max_rounds", "answer_wait_rounds"):
-            self.assertIn(key, values)
+        self.assertIn("verify_tls", values)
+        self.assertIn("headcount_deadline_s", values)
 
 
 class MonitorWindowTest(unittest.TestCase):
-    """监听时间窗默认全天，避免夜间测试被静默拦住。"""
+    """监听时间窗默认全天。"""
 
     def test_default_is_full_day(self) -> None:
         settings = Settings()

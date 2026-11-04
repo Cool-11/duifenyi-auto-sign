@@ -1,261 +1,266 @@
-"""ActivityProcessor 的离线单元测试：回执判定、日志语义与重试收口。"""
+"""处理器单元测试：门禁放行、四类分发、答案取值与结果判定。"""
 
 from __future__ import annotations
 
+import math
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from duifene.errors import AppApiError
 from duifene.models import CheckInActivity, Course, Outcome
 from duifene.processor import ActivityProcessor
 from duifene.settings import Settings
 
-COURSE = Course(course_id="123", class_id="456", name="测试课")
+COURSE = Course(course_id="11", class_id="21", name="测试课")
+TIME_FMT = "%Y-%m-%dT%H:%M:%S"
 
 
-def make_activity(activity_id: str = "2557759", code: str = "") -> CheckInActivity:
-    """构造一条「刚发起、可签到」的活动。"""
-    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-    return CheckInActivity.from_raw(
-        {
-            "ID": activity_id,
-            "CheckInType": "1",
-            "CheckInCode": code,
-            "CanApply": "1",
-            "CheckInStatus": "0",
-            "StatusID": "0",
-            "StatusName": "缺勤",
-            "CreaterDate": now,
-            "ApplyLimitDate": now,
-        }
-    )
+def make_activity(**overrides) -> CheckInActivity:
+    """构造一条「刚发起、可签到、未出勤」的活动。"""
+    now = datetime.now()
+    values = {
+        "id": "2557759",
+        "type": "1",
+        "code": "1234",
+        "qr_token": "",
+        "room_id": "88",
+        "class_id": "21",
+        "create_date": (now - timedelta(seconds=10)).strftime(TIME_FMT),
+        "valid_date": (now + timedelta(minutes=2)).strftime(TIME_FMT),
+        "check_in_status": "0",
+        "status_id": "0",
+        "status_name": "缺勤",
+    }
+    values.update(overrides)
+    return CheckInActivity(**values)
 
 
 class StubLimiter:
-    """限流状态机替身：始终不阻塞。"""
+    """限流状态机替身。"""
+
+    def __init__(self, blocking: bool = False) -> None:
+        self.blocking = blocking
 
     def is_blocking(self) -> bool:
-        return False
+        return self.blocking
 
     def remaining(self) -> float:
-        return 0.0
-
-    def raise_if_blocking(self) -> None:
-        return None
-
-    def trip(self) -> None:
-        return None
-
-    def is_limit_text(self, text: str) -> bool:
-        return False
+        return 9.0 if self.blocking else 0.0
 
 
 class StubApi:
-    """接口替身：记录提交内容，按预设返回文案。"""
+    """假传输层：记录每类签到实际提交了什么。"""
 
     def __init__(self) -> None:
         self.limiter = StubLimiter()
         self.codes: list[str] = []
-        self.qr_states: list[str] = []
-        self.qr_error = ""
-        self.entry_code: str | None = None
-        self.hanzi: str | None = None
-        self.qr_token: str | None = "TOKEN"
-        self.code_reply: list[str] = ["签到成功!"]
-        self.qr_reply: list[str] = ["参数错误,请重新尝试"]
-
-    def sign_by_code(self, code: str):
-        self.codes.append(code)
-        return self.code_reply.pop(0) if self.code_reply else "签到成功!"
-
-    def sign_by_qr(self, state: str):
-        self.qr_states.append(state)
-        return self.qr_reply.pop(0) if self.qr_reply else "参数错误,请重新尝试"
-
-    def fetch_qr_state(self, course: Course):
-        return self.qr_token
-
-    def fetch_code_from_entry(self):
-        return self.entry_code
-
-    def fetch_hanzi_answer(self, course: Course):
-        return self.hanzi
-
-    def prime_checkin_entry(self, course: Course) -> None:
-        return None
+        self.qr_tokens: list[str] = []
+        self.locations: list[tuple[float, float]] = []
+        self.headcount: tuple[int, int] | None = (10, 30)
+        self.headcount_error: Exception | None = None
+        self.code_reply = "签到成功！"
+        self.qr_reply = "签到成功！"
+        self.location_reply = "签到成功！"
+        self.room: tuple[float, float] | None = (116.397, 39.909)
+        self.detail: CheckInActivity | None = None
+        self.detail_calls = 0
 
     def fetch_headcount(self, activity_id: str):
-        return (10, 30)
+        if self.headcount_error is not None:
+            raise self.headcount_error
+        return self.headcount
+
+    def fetch_activity(self, activity_id: str):
+        self.detail_calls += 1
+        return self.detail
+
+    def fetch_room_coordinates(self, activity):
+        return self.room
+
+    def sign_by_code(self, code: str) -> str:
+        self.codes.append(code)
+        return self.code_reply
+
+    def sign_by_qr(self, token: str) -> str:
+        self.qr_tokens.append(token)
+        return self.qr_reply
+
+    def sign_by_location(self, longitude: float, latitude: float) -> str:
+        self.locations.append((longitude, latitude))
+        return self.location_reply
 
 
-class StubPush:
-    """WebSocket 推送替身：无订阅、无坐标。"""
-
-    subscribed_id = None
-
-    def subscribe(self, activity_id: str) -> bool:
-        return False
-
-    def take_follow_point(self):
-        return None
-
-    def stop(self) -> None:
-        return None
-
-
-class StubResolver:
-    """坐标反推替身：解不出来。"""
-
-    def resolve(self, course: Course):
-        return None
-
-
-class StubStore:
-    """坐标缓存替身：永远无缓存。"""
-
-    def load_center(self, class_id: str):
-        return None
-
-    def save_center(self, class_id: str, lon: float, lat: float) -> None:
-        return None
-
-
-def make_processor(manual=None, **overrides) -> tuple[ActivityProcessor, StubApi, list[str]]:
-    """组装处理器与可观测的日志列表。"""
+def make_processor(**settings_overrides):
+    """组装处理器；默认关掉门禁等待，避免测试等待。"""
     settings = Settings()
+    settings.sign_delay_s = 0.0
+    settings.headcount_ratio = 0.0
+    settings.headcount_deadline_s = 45.0
     settings.qr_retry_interval_s = 0.0
-    for key, value in overrides.items():
+    settings.location_retry_interval_s = 0.0
+    for key, value in settings_overrides.items():
         setattr(settings, key, value)
     api = StubApi()
     logs: list[str] = []
-    processor = ActivityProcessor(
-        settings, api, StubPush(), StubResolver(), StubStore(), logs.append, manual
-    )
+    processor = ActivityProcessor(settings, api, logs.append)
     return processor, api, logs
 
 
-class SignedDetectionTest(unittest.TestCase):
-    """服务端回执的判定矩阵。"""
+class GateTest(unittest.TestCase):
+    def test_attended_activity_is_skipped(self) -> None:
+        processor, api, _ = make_processor()
+        outcome = processor.process(make_activity(status_name="出勤"), COURSE)
+        self.assertIs(outcome, Outcome.SKIPPED)
+        self.assertEqual(api.codes, [])
 
-    def test_matrix(self) -> None:
-        cases = {
-            "签到成功!": True,
-            "签到成功": True,
-            "已签到": True,
-            "请勿重复签到": True,
-            "签到未成功": False,
-            "签到失败：距离太远": False,
-            "参数错误,请重新尝试": False,
-            "": False,
-            None: False,
-        }
-        for text, expected in cases.items():
-            self.assertIs(ActivityProcessor._is_signed(text), expected, text)
+    def test_ended_activity_is_skipped(self) -> None:
+        processor, api, _ = make_processor()
+        past = (datetime.now() - timedelta(minutes=1)).strftime(TIME_FMT)
+        outcome = processor.process(make_activity(valid_date=past), COURSE)
+        self.assertIs(outcome, Outcome.SKIPPED)
+        self.assertEqual(api.codes, [])
 
+    def test_stale_activity_is_skipped(self) -> None:
+        processor, api, logs = make_processor(stale_sign_minutes=1)
+        old = (datetime.now() - timedelta(minutes=5)).strftime(TIME_FMT)
+        outcome = processor.process(make_activity(create_date=old), COURSE)
+        self.assertIs(outcome, Outcome.SKIPPED)
+        self.assertTrue(any("旧活动" in line for line in logs))
 
-class LogSilenceTest(unittest.TestCase):
-    """失败日志静音与 force 覆盖。"""
-
-    def test_force_overrides_silence(self) -> None:
-        processor, _api, logs = make_processor()
-        activity = make_activity()
-        processor._log_result(activity.id, COURSE, "签到失败：无响应")
-        processor._log_result(activity.id, COURSE, "签到成功")
-        self.assertEqual(len(logs), 1)
-        processor._log_result(activity.id, COURSE, "签到成功", force=True)
-        self.assertEqual(len(logs), 2)
-        self.assertIn("签到成功", logs[-1])
-
-
-class CodeSignTest(unittest.TestCase):
-    """签到码：入口页兜底 + 轮次收口。"""
-
-    def test_submits_code_from_entry_page(self) -> None:
-        processor, api, _logs = make_processor()
-        api.entry_code = "1234"
-        outcome = processor._sign_code(make_activity(), COURSE)
+    def test_headcount_failure_does_not_block_signing(self) -> None:
+        """人数接口异常必须放行：旧版正是卡在这里，四种签到全部没反应。"""
+        processor, api, logs = make_processor(headcount_ratio=0.5)
+        api.headcount_error = AppApiError("读取签到人数失败")
+        outcome = processor.process(make_activity(), COURSE)
         self.assertIs(outcome, Outcome.SIGNED)
         self.assertEqual(api.codes, ["1234"])
+        self.assertTrue(any("人数查询失败" in line for line in logs))
 
-    def test_waits_then_gives_up(self) -> None:
-        processor, _api, logs = make_processor(answer_wait_rounds=3)
-        activity = make_activity()
-        outcomes = [processor._sign_code(activity, COURSE) for _ in range(3)]
-        self.assertEqual(
-            outcomes, [Outcome.DEFERRED, Outcome.DEFERRED, Outcome.SKIPPED]
-        )
-        self.assertTrue(any("上限 3 轮" in line for line in logs))
-        self.assertTrue(any("放弃" in line for line in logs))
+    def test_zero_total_does_not_block_signing(self) -> None:
+        processor, api, _ = make_processor(headcount_ratio=0.5)
+        api.headcount = (0, 0)
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.SIGNED)
 
-
-class ManualCodeTest(unittest.TestCase):
-    """手动提交的码：签到码与汉字都应使用，且只消费一次。"""
-
-    def test_manual_code_signs_once(self) -> None:
-        pending = ["8888"]
-        processor, api, _logs = make_processor(
-            manual=lambda: pending.pop() if pending else None
-        )
-        self.assertIs(processor._sign_code(make_activity(), COURSE), Outcome.SIGNED)
-        self.assertEqual(api.codes, ["8888"])
-        # 已消费：下一条活动回到等待，不会重复提交同一个码
+    def test_ratio_gate_waits_then_deadline_releases(self) -> None:
+        processor, api, _ = make_processor(headcount_ratio=0.5)
+        api.headcount = (1, 30)
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
+        self.assertEqual(api.codes, [])
+        # 活动已创建 60 秒，超过兜底时限 45 秒 → 直接签
+        old = (datetime.now() - timedelta(seconds=60)).strftime(TIME_FMT)
         self.assertIs(
-            processor._sign_code(make_activity(activity_id="2"), COURSE),
-            Outcome.DEFERRED,
+            processor.process(make_activity(create_date=old), COURSE), Outcome.SIGNED
         )
+
+    def test_delay_gate_waits(self) -> None:
+        processor, api, logs = make_processor(sign_delay_s=30.0)
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
+        self.assertEqual(api.codes, [])
+        self.assertTrue(any("延迟等待" in line for line in logs))
+
+    def test_limiter_blocking_defers(self) -> None:
+        processor, api, logs = make_processor()
+        api.limiter.blocking = True
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
+        self.assertEqual(api.codes, [])
+        self.assertTrue(any("限流中" in line for line in logs))
+
+
+class AnswerTest(unittest.TestCase):
+    def test_missing_code_warns_once_and_retries(self) -> None:
+        processor, api, logs = make_processor()
+        activity = make_activity(code="")
+        self.assertIs(processor.process(activity, COURSE), Outcome.DEFERRED)
+        self.assertIs(processor.process(activity, COURSE), Outcome.DEFERRED)
+        self.assertEqual(api.codes, [])
+        self.assertEqual(sum("未取到签到码" in line for line in logs), 1)
+
+    def test_code_from_detail(self) -> None:
+        processor, api, _ = make_processor()
+        api.detail = make_activity(code="4321")
+        outcome = processor.process(make_activity(code=""), COURSE)
+        self.assertIs(outcome, Outcome.SIGNED)
+        self.assertEqual(api.codes, ["4321"])
+
+    def test_manual_code_is_used(self) -> None:
+        processor, api, logs = make_processor()
+        processor._take_manual = lambda: "8888"
+        outcome = processor.process(make_activity(code=""), COURSE)
+        self.assertIs(outcome, Outcome.SIGNED)
         self.assertEqual(api.codes, ["8888"])
+        self.assertTrue(any("手动登记" in line for line in logs))
 
-    def test_manual_answer_used_for_hanzi(self) -> None:
-        pending = ["春眠不觉"]
-        processor, api, _logs = make_processor(
-            manual=lambda: pending.pop() if pending else None
+    def test_hanzi_requires_four_chars(self) -> None:
+        processor, api, _ = make_processor()
+        processor._take_manual = lambda: "春眠不觉"
+        outcome = processor.process(make_activity(type="4", code=""), COURSE)
+        self.assertIs(outcome, Outcome.SIGNED)
+        self.assertEqual(api.codes, ["春眠不觉"])
+
+
+class DispatchTest(unittest.TestCase):
+    def test_code_signs(self) -> None:
+        processor, api, _ = make_processor()
+        self.assertIs(processor.process(make_activity(type="1"), COURSE), Outcome.SIGNED)
+        self.assertEqual(api.codes, ["1234"])
+
+    def test_qr_signs_with_token(self) -> None:
+        processor, api, _ = make_processor()
+        outcome = processor.process(
+            make_activity(type="2", code="", qr_token="TOKEN"), COURSE
         )
-        self.assertIs(processor._sign_hanzi(make_activity(), COURSE), Outcome.SIGNED)
-        self.assertEqual(api.codes, ["春眠不觉"])
+        self.assertIs(outcome, Outcome.SIGNED)
+        self.assertEqual(api.qr_tokens, ["TOKEN"])
 
+    def test_location_signs_near_room(self) -> None:
+        processor, api, _ = make_processor()
+        outcome = processor.process(make_activity(type="3", code=""), COURSE)
+        self.assertIs(outcome, Outcome.SIGNED)
+        self.assertEqual(len(api.locations), 1)
+        lon, lat = api.locations[0]
+        dlat = (lat - 39.909) * 111132.92
+        dlon = (lon - 116.397) * 111320.0 * math.cos(math.radians(39.909))
+        distance = math.hypot(dlat, dlon)
+        self.assertGreaterEqual(distance, 2.5)
+        self.assertLessEqual(distance, 18.5)
 
-class HanziSignTest(unittest.TestCase):
-    """汉字：取不到答案同样按轮次收口。"""
+    def test_location_without_room_retries(self) -> None:
+        processor, api, logs = make_processor()
+        api.room = None
+        outcome = processor.process(make_activity(type="3", code=""), COURSE)
+        self.assertIs(outcome, Outcome.DEFERRED)
+        self.assertEqual(api.locations, [])
+        self.assertTrue(any("未取到教室坐标" in line for line in logs))
 
-    def test_gives_up_after_limit(self) -> None:
-        processor, _api, logs = make_processor(answer_wait_rounds=2)
+    def test_unknown_type_is_skipped(self) -> None:
+        processor, api, logs = make_processor()
+        self.assertIs(processor.process(make_activity(type="9"), COURSE), Outcome.SKIPPED)
+        self.assertEqual(api.codes, [])
+        self.assertTrue(any("类型未知" in line for line in logs))
+
+    def test_signed_activity_is_not_repeated(self) -> None:
+        processor, api, _ = make_processor()
         activity = make_activity()
-        first = processor._sign_hanzi(activity, COURSE)
-        second = processor._sign_hanzi(activity, COURSE)
-        self.assertIs(first, Outcome.DEFERRED)
-        self.assertIs(second, Outcome.SKIPPED)
-        self.assertTrue(any("汉字答案" in line for line in logs))
-
-    def test_submits_when_answer_available(self) -> None:
-        processor, api, _logs = make_processor()
-        api.hanzi = "春眠不觉"
-        self.assertIs(processor._sign_hanzi(make_activity(), COURSE), Outcome.SIGNED)
-        self.assertEqual(api.codes, ["春眠不觉"])
+        processor.process(activity, COURSE)
+        self.assertIs(processor.process(activity, COURSE), Outcome.SKIPPED)
+        self.assertEqual(api.codes, ["1234"])
 
 
-class QrSignTest(unittest.TestCase):
-    """二维码：直签失败 → 实时令牌重投 → 轮次用尽收口。"""
+class ResultJudgeTest(unittest.TestCase):
+    def test_success_variants(self) -> None:
+        for message in ("签到成功！", "签到成功", "已签到", "请勿重复签到"):
+            self.assertTrue(ActivityProcessor._is_signed(message), message)
 
-    def test_retries_then_gives_up(self) -> None:
-        processor, api, logs = make_processor(qr_max_rounds=2, qr_retry_interval_s=0.0)
-        activity = make_activity()
-        first = processor._sign_qr(activity, COURSE)
-        second = processor._sign_qr(activity, COURSE)
-        self.assertIs(first, Outcome.DEFERRED)
-        self.assertIs(second, Outcome.SKIPPED)
-        self.assertTrue(any("二维码" in line for line in logs))
-        # 每轮都应尝试过实时令牌，而不是只发活动 ID
-        self.assertIn("TOKEN", api.qr_states)
+    def test_failure_variants(self) -> None:
+        for message in ("签到失败", "签到未成功", "参数错误", "", None):
+            self.assertFalse(ActivityProcessor._is_signed(message), message)
 
-    def test_success_with_live_token(self) -> None:
-        processor, api, _logs = make_processor()
-        api.qr_reply = ["参数错误,请重新尝试", "签到成功!"]
-        self.assertIs(processor._sign_qr(make_activity(), COURSE), Outcome.SIGNED)
-
-    def test_signed_clears_retry_state(self) -> None:
-        processor, api, _logs = make_processor()
-        api.qr_reply = ["参数错误,请重新尝试", "签到成功!"]
-        processor._execute(make_activity(), COURSE)
-        self.assertEqual(processor._qr_rounds, {})
+    def test_failure_is_reported_with_server_text(self) -> None:
+        processor, api, logs = make_processor()
+        api.code_reply = "签到码错误"
+        outcome = processor.process(make_activity(), COURSE)
+        self.assertIs(outcome, Outcome.SKIPPED)
+        self.assertTrue(any("签到失败：签到码错误" in line for line in logs))
 
 
 if __name__ == "__main__":

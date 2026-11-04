@@ -17,20 +17,6 @@
   // 开始/停止请求在途：期间控件保持禁用，避免连点重复提交。
   var runBusy = false;
 
-  // 微信授权链接（复制按钮与说明步骤共用；此处为原始文本，& 不做 HTML 转义）
-  var WECHAT_LINK =
-    "https://open.weixin.qq.com/connect/oauth2/authorize?appid=wx1b5650884f657981&redirect_uri=https://www.duifene.com/_FileManage/PdfView.aspx?file=https%3A%2F%2Ffs.duifene.com%2Fres%2Fr2%2Fu6106199%2F%E5%AF%B9%E5%88%86%E6%98%93%E7%99%BB%E5%BD%95_876c9d439ca68ead389c.pdf&response_type=code&scope=snsapi_userinfo&connect_redirect=1#wechat_redirect";
-
-  // 说明步骤：字符串为普通文案；{link:true} 处渲染「链接 + 复制按钮」。
-  // 注意：不能用 ``step.link`` 判断——字符串经原型链装箱会命中已废弃的
-  // String.prototype.link 方法（返回函数，truthy），导致所有文本步骤都被误判。
-  var WECHAT_HELP = [
-    "打开电脑端微信，复制如下链接到文件传输助手并发送：",
-    { isLink: true },
-    "点击进入链接，点击微信浏览器窗口右上角三个点，点击复制链接。",
-    "把微信链接粘贴到左侧「登录链接」输入框，点击登录。",
-  ];
-
   var $ = function (id) {
     return document.getElementById(id);
   };
@@ -40,144 +26,61 @@
     {
       title: "轮询与退避",
       fields: [
-        {
-          key: "poll_min_s",
-          label: "轮询最小间隔",
-          hint: "秒",
-          type: "number",
-        },
-        {
-          key: "poll_max_s",
-          label: "轮询最大间隔",
-          hint: "秒",
-          type: "number",
-        },
-        {
-          key: "login_check_interval_s",
-          label: "登录态检查间隔",
-          hint: "秒",
-          type: "number",
-        },
+        { key: "poll_min_s", label: "轮询最小间隔", hint: "秒" },
+        { key: "poll_max_s", label: "轮询最大间隔", hint: "秒" },
         {
           key: "error_backoff_max_s",
           label: "异常退避上限",
-          hint: "秒",
-          type: "number",
+          hint: "秒，连续出错时的最长等待",
         },
       ],
     },
     {
       title: "监听时间窗",
       fields: [
-        {
-          key: "monitor_start_hour",
-          label: "起始小时",
-          hint: "0–24，含",
-          type: "number",
-        },
-        {
-          key: "monitor_end_hour",
-          label: "结束小时",
-          hint: "0–24，不含",
-          type: "number",
-        },
+        { key: "monitor_start_hour", label: "起始小时", hint: "0–24，含" },
+        { key: "monitor_end_hour", label: "结束小时", hint: "0–24，不含" },
       ],
     },
     {
       title: "签到门禁",
       fields: [
         {
+          key: "headcount_ratio",
+          label: "已签占比门槛",
+          hint: "0–1，如 0.2 表示班里签够 20% 才跟签；0 为不限制",
+        },
+        {
+          key: "headcount_deadline_s",
+          label: "门槛兜底时限",
+          hint: "秒，超过该时长无论人数多少都直接签",
+        },
+        {
           key: "small_class_max",
           label: "小班人数阈值",
-          hint: "低于此值直接签到",
-          type: "number",
+          hint: "总人数低于此值不等占比，直接签",
         },
-        {
-          key: "small_class_delay_s",
-          label: "小班等待时长",
-          hint: "秒",
-          type: "number",
-        },
-        {
-          key: "headcount_ratio",
-          label: "大班签到占比",
-          hint: "0–1，如 0.2",
-          type: "number",
-        },
+        { key: "small_class_delay_s", label: "小班等待时长", hint: "秒" },
         {
           key: "sign_delay_s",
           label: "检测后延迟秒数",
           hint: "检测到签到后等待的秒数，0 为立即签",
-          type: "number",
-        },
-        {
-          key: "min_headcount",
-          label: "最低已签人数",
-          hint: "已签人数达到该值才签到，0 为不限制",
-          type: "number",
         },
         {
           key: "stale_sign_minutes",
           label: "旧活动上限",
-          hint: "分钟，超过则跳过",
-          type: "number",
-        },
-      ],
-    },
-    {
-      title: "定位与推送",
-      fields: [
-        {
-          key: "ws_follow_distance_m",
-          label: "推送跟随距离",
-          hint: "米，超过则不跟随",
-          type: "number",
-        },
-        {
-          key: "ws_wait_timeout_s",
-          label: "推送等待上限",
-          hint: "秒",
-          type: "number",
-        },
-      ],
-    },
-    {
-      title: "二维码与取码",
-      fields: [
-        {
-          key: "qr_retry_interval_s",
-          label: "二维码重试间隔",
-          hint: "秒，令牌滚动，间隔太短无意义",
-          type: "number",
-        },
-        {
-          key: "qr_max_rounds",
-          label: "二维码重试轮次",
-          hint: "超过即判定活动结束",
-          type: "number",
-        },
-        {
-          key: "answer_wait_rounds",
-          label: "取码等待轮次",
-          hint: "签到码/汉字取不到时的重试轮次",
-          type: "number",
+          hint: "分钟，创建超过则跳过",
         },
       ],
     },
     {
       title: "限流与网络",
       fields: [
-        {
-          key: "cooldown_seconds",
-          label: "限流静默时长",
-          hint: "秒",
-          type: "number",
-        },
+        { key: "cooldown_seconds", label: "限流静默时长", hint: "秒" },
         {
           key: "proxy_url",
           label: "代理地址",
-          hint: "留空为直连；如 http://127.0.0.1:8080",
-          type: "text",
+          hint: "留空=直连（系统代理对本程序无效）；填写后会自动关闭证书校验",
         },
       ],
     },
@@ -201,11 +104,10 @@
     clearTimeout(el._t);
     el._t = setTimeout(function () {
       el.className = "toast";
-    }, 2600);
+    }, 2800);
   }
 
   // 模态提示：用于登录态失效等必须被用户确认的消息。
-  // 背景遮罩同时变暗并拦截点击，点「确定」后关闭。
   function showModal(text, title) {
     var mask = $("modalMask");
     if (!mask) return;
@@ -223,9 +125,6 @@
     mask.setAttribute("aria-hidden", "true");
   }
 
-  // 登录尝试（点击登录按钮）的结果一律用 toast：这是用户主动操作后的即时反馈，
-  // 不该弹窗打断。弹窗只留给后台察觉「既有会话失效」这类必须确认的状态事件
-  // （见 showNotice / bootstrap）——两种语义不同，不能共用同一通道。
   function notifyResult(res) {
     if (!res) return;
     var msg = res.message || "";
@@ -249,8 +148,7 @@
   // 课程下拉与「开始监听」的可用性统一由此推导，单一来源避免冲突：
   //   - 监听中：两者禁用（锁定本次监听的课程，防止中途换课造成错配）；
   //   - 未登录（无课程）：两者禁用；
-  //   - 请求在途：两者禁用，避免连点重复提交；
-  //   - 已停止且有课程：两者启用。
+  //   - 请求在途：两者禁用，避免连点重复提交。
   function syncRunControls() {
     var startBtn = $("startBtn");
     var sel = $("courseSelect");
@@ -296,22 +194,19 @@
       '<div class="log-empty-sub">登录并开始监听后将在此显示</div></div>';
   }
 
-  // 登录成功后重置日志视图：清空列表并把游标复位到后端返回的日志序号。
-  // 后端在登录成功时已清空日志队列，故这里只需复位本地显示与游标；
-  // 不能只清列表而不动游标——留旧游标会让后续按 id 拉取的增量出现空洞。
-  function resetLogsAfterLogin(nextId) {
-    clearLogs();
-    if (typeof nextId === "number") logCursor = nextId;
-  }
-
   // ─ 状态刷新 ────────────────────────────────────────────
-  // 登录状态位：由后端 logged_in 驱动（权威判定），未登录 / 已登录两态。
-  function setLoginChip(loggedIn) {
+  function setLoginChip(loggedIn, account) {
     var chip = $("loginChip");
-    if (!chip) return;
-    loggedIn = !!loggedIn;
-    chip.className = "chip chip-login " + (loggedIn ? "on" : "off");
-    $("loginText").textContent = loggedIn ? "已登录" : "未登录";
+    if (chip) {
+      chip.className = "chip chip-login " + (loggedIn ? "on" : "off");
+      $("loginText").textContent = loggedIn ? "已登录" : "未登录";
+    }
+    var logoutBtn = $("logoutBtn");
+    if (logoutBtn) logoutBtn.disabled = !loggedIn;
+    var userInput = $("userInput");
+    if (loggedIn && account && userInput && !userInput.value) {
+      userInput.value = account;
+    }
   }
 
   function applyState(st) {
@@ -328,7 +223,6 @@
       $("lastTick").textContent = st.last_tick_ts
         ? fmtTime(st.last_tick_ts)
         : "—";
-      // 限流倒计时：>0 时显示「还需 N 秒」，否则隐藏该条目。
       var left = Number(st.limiter_remaining_s) || 0;
       var item = $("limiterItem");
       if (item) {
@@ -339,12 +233,8 @@
           item.classList.add("hidden");
         }
       }
-      // logged_in 只在后端状态里出现；start/stop 的部分状态调用
-      // （如 applyState({running:true})）不含该字段，不可据此改状态位。
       if (typeof st.logged_in === "boolean") {
-        setLoginChip(st.logged_in);
-        // 后台探测到会话失效时，后端已清空当前课程；此处同步复位课程
-        // 选择器，否则会留着失效课程的旧选项且「开始监听」仍可点。
+        setLoginChip(st.logged_in, st.user_account);
         if (!st.logged_in && $("courseSelect").value) {
           fillCourses([], "");
         }
@@ -353,7 +243,6 @@
     }
   }
 
-  // 实时时钟：每秒本地跳动，体现"程序在运行"
   function tickClock() {
     var el = $("clockTime");
     if (el) el.textContent = fmtTime(Date.now() / 1000);
@@ -364,7 +253,7 @@
     if (!b) return;
     // 登录态失效用模态确认（横幅易被忽略），其余仍走横幅。
     if (String(notice.text || "").indexOf("重新登录") !== -1) {
-      showModal(notice.text, "登录失败");
+      showModal(notice.text, "登录失效");
       b.classList.add("hidden");
       return;
     }
@@ -406,113 +295,79 @@
   }
 
   // ─ 初始化 ──────────────────────────────────────────────
+  function applyBootstrap(res) {
+    if (!res) return;
+    $("versionChip").textContent = "v" + res.version;
+    document.title = "对分易自动签到 v" + res.version;
+    fillCourses(res.courses, res.selected);
+    setLoginChip(res.logged_in, res.user_account);
+    if (res.saved_account && !$("userInput").value) {
+      $("userInput").value = res.saved_account;
+    }
+    if (res.logs && res.logs.length) {
+      logCursor = res.logs[res.logs.length - 1].id;
+      appendLogs(res.logs);
+    }
+    if (res.message) {
+      if (res.message.indexOf("重新登录") !== -1) {
+        showModal(res.message, "登录失败");
+      } else {
+        toast(res.message, "error");
+      }
+    }
+  }
+
   function bootstrap() {
     api.bootstrap().then(function (res) {
-      if (!res) return;
-      $("versionChip").textContent = "v" + res.version;
-      document.title = "对分易自动签到 v" + res.version;
-      fillCourses(res.courses, res.selected);
-      setLoginChip(res.logged_in);
-      if (res.logs && res.logs.length) {
-        logCursor = res.logs[res.logs.length - 1].id;
-        appendLogs(res.logs);
-      }
-      if (res.message) {
-        // 登录态失效属必须被用户明确确认的消息：弹窗提示，而非一闪而过的 toast。
-        if (res.message.indexOf("重新登录") !== -1) {
-          showModal(res.message, "登录失败");
-        } else {
-          toast(res.message, "error");
-        }
-      }
+      applyBootstrap(res);
       startPolling();
     });
   }
 
   // ─ 事件绑定 ────────────────────────────────────────────
-  // 登录页签高度取两者较高者，使「微信链接 / 账号密码」切换时面板尺寸不变。
-  // 用 min-height 而非叠层或写死像素：页签仍按 display 正常切换、互不重叠，
-  // 故不会在 WebView2 合成层留下残影；高度又不会随页签长短跳动。
-  function lockTabPaneHeight() {
-    var link = $("paneLink"),
-      pwd = $("panePwd");
-    if (!link || !pwd) return;
-    var linkHidden = link.classList.contains("hidden"),
-      pwdHidden = pwd.classList.contains("hidden");
-    // 量高度需元素可见：先临时显示，量完还原。
-    link.classList.remove("hidden");
-    pwd.classList.remove("hidden");
-    // 用 boundingRect 并向上取整：offsetHeight 会取整到整数，与亚像素布局
-    // 叠加后可能比另一个页签少 1px，导致切换时高度抖动。
-    var tallest = Math.ceil(
-      Math.max(
-        link.getBoundingClientRect().height,
-        pwd.getBoundingClientRect().height,
-      ),
-    );
-    if (linkHidden) link.classList.add("hidden");
-    if (pwdHidden) pwd.classList.add("hidden");
-    link.style.minHeight = tallest + "px";
-    pwd.style.minHeight = tallest + "px";
+  function doLogin() {
+    var u = $("userInput").value.trim();
+    if (!u) {
+      markInvalid($("userInput"));
+      toast("请输入对分易账号", "error");
+      return;
+    }
+    if (!$("passInput").value) {
+      markInvalid($("passInput"));
+      toast("请输入密码", "error");
+      return;
+    }
+    setLoading("loginBtn", "loginSpinner", true);
+    var remember = $("rememberChk").checked;
+    api.login_by_password(u, $("passInput").value, remember).then(function (r) {
+      setLoading("loginBtn", "loginSpinner", false);
+      notifyResult(r);
+      if (!r || !r.ok) return;
+      $("passInput").value = "";
+      api.bootstrap().then(function (b) {
+        fillCourses(b.courses, b.selected);
+        setLoginChip(b.logged_in, b.user_account || u);
+      });
+    });
   }
 
   function bind() {
-    // 分段选项卡
-    $("loginTabs").addEventListener("click", function (e) {
-      var btn = e.target.closest(".seg");
-      if (!btn) return;
-      Array.prototype.forEach.call(
-        document.querySelectorAll(".seg"),
-        function (b) {
-          b.classList.toggle("active", b === btn);
-        },
-      );
-      var isLink = btn.dataset.tab === "link";
-      $("paneLink").classList.toggle("hidden", !isLink);
-      $("panePwd").classList.toggle("hidden", isLink);
-    });
-
-    // 链接登录
-    $("loginLinkBtn").addEventListener("click", function () {
-      var val = $("linkInput").value.trim();
-      if (val.indexOf("code=") === -1) {
-        markInvalid($("linkInput"));
-        toast("链接有误", "error");
-        return;
-      }
-      setLoading("loginLinkBtn", "linkSpinner", true);
-      api.login_by_link(val).then(function (r) {
-        setLoading("loginLinkBtn", "linkSpinner", false);
-        notifyResult(r);
-        if (r.ok) {
-          resetLogsAfterLogin(r.next_id);
-          api.bootstrap().then(function (b) {
-            fillCourses(b.courses, b.selected);
-            setLoginChip(b.logged_in);
-          });
-        }
+    // 登录（回车同样提交，避免每次都要点按钮）
+    $("loginBtn").addEventListener("click", doLogin);
+    ["userInput", "passInput"].forEach(function (id) {
+      $(id).addEventListener("keydown", function (e) {
+        if (e.key === "Enter") doLogin();
       });
     });
 
-    // 密码登录
-    $("loginPwdBtn").addEventListener("click", function () {
-      var u = $("userInput").value.trim();
-      if (!u) {
-        markInvalid($("userInput"));
-        toast("请输入账号", "error");
-        return;
-      }
-      setLoading("loginPwdBtn", "pwdSpinner", true);
-      api.login_by_password(u, $("passInput").value).then(function (r) {
-        setLoading("loginPwdBtn", "pwdSpinner", false);
+    // 退出登录：清掉保存的密码与本机登录态
+    $("logoutBtn").addEventListener("click", function () {
+      api.logout().then(function (r) {
         notifyResult(r);
-        if (r.ok) {
-          resetLogsAfterLogin(r.next_id);
-          api.bootstrap().then(function (b) {
-            fillCourses(b.courses, b.selected);
-            setLoginChip(b.logged_in);
-          });
-        }
+        fillCourses([], "");
+        setLoginChip(false, "");
+        $("passInput").value = "";
+        applyState({ running: false });
       });
     });
 
@@ -538,8 +393,8 @@
       });
     });
 
-    // 手动签到：平台不再向学生下发签到码/汉字答案，由用户从群消息复制后提交，
-    // 登记后 5 分钟内遇到签到码/汉字活动即自动使用
+    // 手动签到：服务端没下发签到码/汉字时，把群里的 4 位码或 4 个汉字填进来，
+    // 登记后 5 分钟内遇到对应活动即自动使用
     function submitManual() {
       var input = $("manualInput");
       var value = (input.value || "").replace(/\s/g, "");
@@ -572,8 +427,7 @@
       if (autoScroll) $("logBody").scrollTop = $("logBody").scrollHeight;
     });
 
-    // 手动清空：同时清前端显示与后端队列，否则旧日志会在下次 bootstrap
-    // 时被重新拉回。
+    // 手动清空：同时清前端显示与后端队列，否则旧日志会在下次 bootstrap 时被拉回
     $("clearBtn").addEventListener("click", function () {
       clearLogs();
       api.clear_logs().then(function (r) {
@@ -609,9 +463,7 @@
     // 顶栏是可拖区域（.pywebview-drag-region）；其内的交互控件须阻止
     // mousedown 冒泡，否则点按钮会被 pywebview 判定为拖窗。
     Array.prototype.forEach.call(
-      document.querySelectorAll(
-        ".topbar button, .topbar select, .topbar input",
-      ),
+      document.querySelectorAll(".topbar button, .topbar select, .topbar input"),
       function (el) {
         el.addEventListener("mousedown", function (e) {
           e.stopPropagation();
@@ -626,82 +478,6 @@
     $("settingsReset").addEventListener("click", function () {
       renderSettings(settingsDefaults);
       toast("已填入默认值，点击保存生效");
-    });
-  }
-
-  // 复制文本：优先 Clipboard API（WebView2 下 file:// 属可信来源可用），
-  // 失败则回退到 execCommand 兼容路径。
-  function copyText(text) {
-    var fallback = function () {
-      var ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try {
-        ok = document.execCommand("copy");
-      } catch (e) {
-        ok = false;
-      }
-      document.body.removeChild(ta);
-      return ok;
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text).then(
-        function () {
-          return true;
-        },
-        function () {
-          return fallback();
-        },
-      );
-    }
-    return Promise.resolve(fallback());
-  }
-
-  function copyWechatLink() {
-    copyText(WECHAT_LINK).then(function (ok) {
-      toast(
-        ok ? "链接已复制" : "复制失败，请手动选取",
-        ok ? "success" : "error",
-      );
-    });
-  }
-
-  // 填充帮助步骤
-  function renderHelp() {
-    var ol = $("helpSteps");
-    ol.innerHTML = "";
-    var lastLi = null;
-    WECHAT_HELP.forEach(function (step) {
-      // 链接行不单独占一个列表项：否则 <ol> 会自动编号，出现「2.」并导致后续断号。
-      // 把它并入上一条步骤的 li 内，编号仍为 1 / 2 / 3。
-      if (step && typeof step === "object" && step.isLink) {
-        if (!lastLi) return;
-        var row = document.createElement("div");
-        row.className = "help-link-row";
-        var code = document.createElement("code");
-        code.className = "help-link";
-        code.textContent = WECHAT_LINK;
-        code.title = WECHAT_LINK;
-        var btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "btn btn-primary btn-sm help-copy-btn";
-        btn.textContent = "复制链接";
-        btn.addEventListener("click", copyWechatLink);
-        row.appendChild(code);
-        row.appendChild(btn);
-        lastLi.appendChild(row);
-        return;
-      }
-      var li = document.createElement("li");
-      li.textContent = step;
-      ol.appendChild(li);
-      lastLi = li;
     });
   }
 
@@ -738,25 +514,13 @@
 
         var ctrl = document.createElement("div");
         ctrl.className = "settings-row-control";
-        var inputId = fieldInputId(f.key);
-        if (f.type === "bool") {
-          var sw = document.createElement("label");
-          sw.className = "switch";
-          sw.innerHTML =
-            '<input type="checkbox" id="' +
-            inputId +
-            '"><span class="track"></span>';
-          ctrl.appendChild(sw);
-        } else {
-          var input = document.createElement("input");
-          input.className = "input";
-          input.id = inputId;
-          // 数值字段也用 text：后端负责类型转换与范围校验，
-          // number 的原生步进控件样式与整体表单不协调。
-          input.type = "text";
-          if (f.placeholder) input.placeholder = f.placeholder;
-          ctrl.appendChild(input);
-        }
+        var input = document.createElement("input");
+        input.className = "input";
+        input.id = fieldInputId(f.key);
+        // 数值字段也用 text：后端负责类型转换与范围校验，
+        // number 的原生步进控件样式与整体表单不协调。
+        input.type = "text";
+        ctrl.appendChild(input);
 
         row.appendChild(text);
         row.appendChild(ctrl);
@@ -772,8 +536,7 @@
         var el = $(fieldInputId(f.key));
         if (!el) return;
         var v = values[f.key];
-        if (f.type === "bool") el.checked = !!v;
-        else el.value = v === undefined || v === null ? "" : String(v);
+        el.value = v === undefined || v === null ? "" : String(v);
         el.classList.remove("invalid");
       });
     });
@@ -785,7 +548,7 @@
       group.fields.forEach(function (f) {
         var el = $(fieldInputId(f.key));
         if (!el) return;
-        patch[f.key] = f.type === "bool" ? el.checked : el.value.trim();
+        patch[f.key] = el.value.trim();
       });
     });
     return patch;
@@ -828,10 +591,8 @@
   // 等待 pywebview 注入 js_api
   window.addEventListener("pywebviewready", function () {
     api = window.pywebview.api;
-    renderHelp();
     buildSettingsForm();
     bind();
-    lockTabPaneHeight();
     tickClock();
     clockTimer = setInterval(tickClock, 1000);
     bootstrap();

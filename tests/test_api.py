@@ -1,280 +1,480 @@
-"""DuifeneApi 的离线单元测试：解析、表单构造与回执判定，全部不发真实请求。"""
+"""DuifeneApi 的离线单元测试：请求构造、响应解析与令牌续期，全部不发真实请求。"""
 
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from duifene.api import DuifeneApi
-from duifene.models import Course
+from duifene.config import IniStore
+from duifene.errors import AppApiError, RateLimited
+from duifene.models import CheckInActivity
 from duifene.rate_limit import RateLimiter
 from duifene.settings import Settings
 
-COURSE = Course(course_id="123", class_id="456", name="测试课")
+LOGIN_OK = {
+    "code": 200,
+    "success": True,
+    "message": "登录成功",
+    "data": {
+        "token": "ACCESS-1",
+        "refreshToken": "REFRESH-1",
+        "userInfo": {
+            "userId": "9527",
+            "userLogin": "20210001",
+            "userName": "张三",
+            "userTypeID": "2",
+        },
+    },
+}
 
 
 class FakeResponse:
     """最小可用的响应替身。"""
 
-    def __init__(self, status_code: int = 200, text: str = "", headers=None) -> None:
+    def __init__(self, status_code: int = 200, payload=None) -> None:
         self.status_code = status_code
-        self.text = text
-        self.headers = headers or {}
+        self._payload = payload
+        self.text = json.dumps(payload) if payload is not None else ""
 
     def json(self):
-        return json.loads(self.text)
-
-
-class FakeCookies:
-    """requests.cookies 的替身，只实现被用到的三个方法。"""
-
-    def __init__(self) -> None:
-        self._data: dict[str, str] = {}
-
-    def clear(self) -> None:
-        self._data.clear()
-
-    def update(self, values) -> None:
-        self._data.update(values)
-
-    def get_dict(self) -> dict[str, str]:
-        return dict(self._data)
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
 
 
 class FakeSession:
-    """按 URL 片段命中预置响应，并记录请求参数供断言。"""
+    """按「方法 + 路径后缀」路由的会话替身，并记录所有请求。"""
 
-    def __init__(self, responses: dict[str, FakeResponse] | None = None) -> None:
-        self.responses = responses or {}
-        self.calls: list[tuple[str, str, dict]] = []
-        self.cookies = FakeCookies()
-        self.proxies: dict[str, str] = {}
-        self.verify = True
+    def __init__(self, routes: list[tuple[str, str, object]]) -> None:
+        self.routes = routes
+        self.calls: list[tuple[str, str, object]] = []
 
-    def get(self, url: str, **kwargs) -> FakeResponse:
-        self.calls.append(("GET", url, kwargs))
-        return self._pick(url)
+    def request(self, method, url, json=None, headers=None, **kwargs):
+        self.calls.append((method, url, json))
+        return self._dispatch(method, url, json)
 
-    def post(self, url: str, **kwargs) -> FakeResponse:
-        self.calls.append(("POST", url, kwargs))
-        return self._pick(url)
+    def get(self, url, params=None, headers=None, **kwargs):
+        self.calls.append(("GET", url, params))
+        return self._dispatch("GET", url, params)
 
-    def _pick(self, url: str) -> FakeResponse:
-        for fragment, response in self.responses.items():
-            if fragment in url:
-                return response
-        return FakeResponse(text="{}")
+    def post(self, url, json=None, headers=None, **kwargs):
+        self.calls.append(("POST", url, json))
+        return self._dispatch("POST", url, json)
 
-    def last_body(self) -> str:
-        """最近一次请求的表单体（字符串形式）。"""
-        for _method, _url, kwargs in reversed(self.calls):
-            data = kwargs.get("data")
-            if isinstance(data, str):
-                return data
-        return ""
+    def _dispatch(self, method: str, url: str, body):
+        for want_method, suffix, reply in self.routes:
+            if want_method == method and url.endswith(suffix):
+                return reply(method, url, body) if callable(reply) else reply
+        raise AssertionError(f"未预期的请求：{method} {url}")
 
-
-def make_api(responses: dict[str, FakeResponse] | None = None) -> DuifeneApi:
-    """构造被测对象；学生 ID 直接注入，避免额外的网络往返。"""
-    session = FakeSession(responses)
-    api = DuifeneApi(session, Settings(), RateLimiter(Settings()))
-    api._user_id = "42"
-    return api
+    def body_of(self, method: str, suffix: str):
+        for call_method, url, body in self.calls:
+            if call_method == method and url.endswith(suffix):
+                return body
+        raise AssertionError(f"没有发出 {method} {suffix}")
 
 
-class LocationPayloadTest(unittest.TestCase):
-    """定位签到的表单必须与官方页面一致。"""
+class ApiTestBase(unittest.TestCase):
+    """提供「已登录」的 api 与临时配置文件。"""
 
-    def test_payload_contains_course_and_student(self) -> None:
-        api = make_api()
-        payload = api._location_payload(COURSE, 116.5, 39.5)
-        for fragment in (
-            "action=signin",
-            "cid=123",
-            "tcid=456",
-            "sid=42",
-            "longitude=116.5",
-            "latitude=39.5",
-        ):
-            self.assertIn(fragment, payload)
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = IniStore(str(Path(self._tmp.name) / "duifenyi.ini"))
+        self.settings = Settings()
+        self.limiter = RateLimiter(self.settings)
 
-    def test_sign_by_location_sends_full_form(self) -> None:
-        api = make_api()
-        api.sign_by_location(COURSE, 116.5, 39.5)
-        body = api._session.last_body()
-        self.assertIn("cid=123", body)
-        self.assertIn("tcid=456", body)
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
 
-    def test_probe_distance_shares_same_form(self) -> None:
-        api = make_api(
-            {"/_CheckIn/CheckInRoomHandler.ashx": FakeResponse(text="距离：123.5米")}
-        )
-        distance = api.probe_distance(COURSE, 116.5, 39.5)
-        self.assertEqual(distance, 123.5)
-        body = api._session.last_body()
-        self.assertIn("cid=123", body)
-        self.assertIn("tcid=456", body)
+    def make_api(self, routes, *, login: bool = True) -> DuifeneApi:
+        session = FakeSession(routes)
+        self.session = session
+        api = DuifeneApi(session, self.settings, self.limiter, self.store)
+        if login:
+            ok, message = api.login("20210001", "secret")
+            self.assertTrue(ok, message)
+            session.calls.clear()
+        return api
 
 
-class QrParsingTest(unittest.TestCase):
-    """二维码相关的纯解析逻辑。"""
+def payload_with_checkin(**check_in) -> dict:
+    """构造一个「有进行中签到」的响应体。"""
+    body = {
+        "id": 2557759,
+        "checkInType": 1,
+        "checkInCode": "1234",
+        "roomID": 88,
+        "tClassID": 21,
+        "createrDate": "2026-11-04T13:00:00",
+        "validDate": "2026-11-04T13:05:00",
+        "checkInStatus": 0,
+        "statusID": 0,
+        "statusName": "缺勤",
+    }
+    body.update(check_in)
+    return {"success": True, "data": {"checkIn": body}}
 
-    def test_extract_data_uri(self) -> None:
-        text = "data:image/png;base64," + "A" * 300
-        self.assertEqual(len(DuifeneApi._extract_base64_image(text) or ""), 300)
 
-    def test_extract_json_body(self) -> None:
-        text = json.dumps({"msg": 1, "msgbox": "B" * 260})
-        self.assertEqual(len(DuifeneApi._extract_base64_image(text) or ""), 260)
+class LoginTest(ApiTestBase):
+    def test_login_success_saves_session(self) -> None:
+        api = self.make_api([("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK))])
+        self.assertTrue(api.is_authenticated)
+        self.assertEqual(api.identity.account, "20210001")
+        self.assertEqual(api.identity.user_type_id, "2")
+        saved = self.store.load_app_session()
+        self.assertEqual(saved["access_token"], "ACCESS-1")
+        self.assertEqual(saved["refresh_token"], "REFRESH-1")
 
-    def test_extract_empty(self) -> None:
-        self.assertIsNone(DuifeneApi._extract_base64_image(""))
-        self.assertIsNone(DuifeneApi._extract_base64_image("参数错误"))
-
-    def test_extract_json_with_escaped_slash(self) -> None:
-        """服务端把 base64 里的 / 转义成 \\/，不能被正则切断。"""
-        payload = "iVBORw0KGgo" + "/" * 250 + "AAA"
-        text = json.dumps({"msg": 1, "msgbox": "二维码生成成功！", "data": payload})
-        text = text.replace("/", "\\/")  # 模拟 ASP.NET 的 JSON 转义
-        self.assertEqual(DuifeneApi._extract_base64_image(text), payload)
-
-    def test_state_from_full_url(self) -> None:
-        api = make_api()
-        url = "https://www.duifene.com/_CheckIn/MB/QrCodeCheckOK.aspx?state=AbC-1_2#x"
-        self.assertEqual(api._state_from_qr_content(url), "AbC-1_2")
-
-    def test_state_from_short_link_follows_redirect(self) -> None:
-        api = make_api(
-            {
-                "/G.aspx": FakeResponse(
-                    status_code=302,
-                    headers={"Location": "/_CheckIn/MB/QrCodeCheckOK.aspx?state=TOK9"},
+    def test_login_failure_returns_server_message(self) -> None:
+        session = FakeSession(
+            [
+                (
+                    "POST",
+                    "/Auth/login",
+                    FakeResponse(
+                        payload={
+                            "code": 400,
+                            "success": False,
+                            "message": "用户名或密码错误！",
+                        }
+                    ),
                 )
+            ]
+        )
+        api = DuifeneApi(session, self.settings, self.limiter, self.store)
+        ok, message = api.login("20210001", "wrong")
+        self.assertFalse(ok)
+        self.assertEqual(message, "用户名或密码错误！")
+        self.assertFalse(api.is_authenticated)
+
+    def test_login_network_error_is_reported(self) -> None:
+        import requests
+
+        def boom(*_args, **_kwargs):
+            raise requests.exceptions.ConnectTimeout("timeout")
+
+        session = FakeSession([("POST", "/Auth/login", boom)])
+        api = DuifeneApi(session, self.settings, self.limiter, self.store)
+        ok, message = api.login("20210001", "secret")
+        self.assertFalse(ok)
+        self.assertIn("网络请求失败", message)
+
+    def test_persisted_session_is_restored(self) -> None:
+        self.store.save_app_session(
+            {
+                "account": "20210001",
+                "user_id": "9527",
+                "user_name": "张三",
+                "user_type_id": "2",
+                "access_token": "ACCESS-1",
+                "access_expires_at": "9999999999",
+                "refresh_token": "REFRESH-1",
+                "refresh_expires_at": "9999999999",
             }
         )
-        content = "https://www.duifene.com/G.aspx?OnlyId=abc"
-        self.assertEqual(api._state_from_qr_content(content), "TOK9")
-
-    def test_state_absent(self) -> None:
-        api = make_api()
-        self.assertIsNone(api._state_from_qr_content("hello"))
-
-    def test_sign_by_qr_keeps_server_text(self) -> None:
-        api = make_api(
-            {
-                "/QrCodeCheckOK.aspx": FakeResponse(
-                    text='<div id="DivOK">参数错误,请重新尝试</div>'
-                )
-            }
-        )
-        self.assertEqual(api.sign_by_qr("2557759"), "参数错误,请重新尝试")
-
-    def test_sign_by_qr_url_encodes_token(self) -> None:
-        """令牌含 + / = 时必须编码，否则服务端会把参数截断成「参数错误」。"""
-        api = make_api(
-            {"/QrCodeCheckOK.aspx": FakeResponse(text='<div id="DivOK">ok</div>')}
-        )
-        api.sign_by_qr("a+b/c=")
-        url = api._session.calls[-1][1]
-        self.assertIn("state=a%2Bb%2Fc%3D", url)
-
-    def test_state_from_key_param_and_bare_token(self) -> None:
-        api = make_api()
-        self.assertEqual(api._state_from_qr_content("https://x/G.aspx?key=K1"), "K1")
-        self.assertEqual(api._state_from_qr_content("BARE_TOKEN_123"), "BARE_TOKEN_123")
-
-    def test_fetch_qr_state_reports_reason(self) -> None:
-        api = make_api(
-            {"/CheckIn.ashx": FakeResponse(text='{"msg":-1,"msgbox":"签到已结束！"}')}
-        )
-        self.assertIsNone(api.fetch_qr_state(COURSE))
-        self.assertIn("签到已结束", api.qr_error)
+        api = DuifeneApi(FakeSession([]), self.settings, self.limiter, self.store)
+        self.assertTrue(api.is_authenticated)
+        self.assertEqual(api.identity.user_id, "9527")
 
 
-class CodeAndHanziSourceTest(unittest.TestCase):
-    """签到码 / 汉字答案的三级取码兜底。"""
-
-    def test_code_from_hidden_input(self) -> None:
-        api = make_api(
-            {
-                "CheckInStudent.aspx": FakeResponse(
-                    text='<input id="HFCheckCodeKey" value="8765" />'
-                )
-            }
-        )
-        self.assertEqual(api.fetch_code_from_entry(), "8765")
-
-    def test_code_from_inline_script(self) -> None:
-        api = make_api(
-            {
-                "CheckInStudent.aspx": FakeResponse(
-                    text="<script>var HFCheckCodeKey = '2143';</script>"
-                )
-            }
-        )
-        self.assertEqual(api.fetch_code_from_entry(), "2143")
-
-    def test_code_absent(self) -> None:
-        api = make_api({"CheckInStudent.aspx": FakeResponse(text="<html></html>")})
-        self.assertIsNone(api.fetch_code_from_entry())
-
-    def test_hanzi_falls_back_to_entry_page(self) -> None:
-        api = make_api(
-            {
-                "TeachCheckIn.aspx": FakeResponse(text='<input id="HFChecktype" />'),
-                "CheckInStudent.aspx": FakeResponse(
-                    text='<input id="HFCheckCodeKey" value="春眠不觉" />'
+class SignTest(ApiTestBase):
+    def test_sign_by_code_payload(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/StudentCheckIn",
+                    FakeResponse(payload={"success": True, "message": "签到成功！"}),
                 ),
-            }
+            ]
         )
-        self.assertEqual(api.fetch_hanzi_answer(COURSE), "春眠不觉")
-
-    def test_hanzi_uses_teacher_page_when_present(self) -> None:
-        api = make_api(
-            {
-                "TeachCheckIn.aspx": FakeResponse(
-                    text='<input id="HFChecktype" value="4" />'
-                    '<input id="HFCheckCodeKey" value="处处闻啼" />'
-                )
-            }
+        self.assertEqual(api.sign_by_code("1234"), "签到成功！")
+        self.assertEqual(
+            self.session.body_of("POST", "/CK/StudentCheckIn"), {"checkInCode": "1234"}
         )
-        self.assertEqual(api.fetch_hanzi_answer(COURSE), "处处闻啼")
+
+    def test_sign_by_qr_payload(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/QrCodeCheckIn",
+                    FakeResponse(payload={"success": True, "message": "签到成功"}),
+                ),
+            ]
+        )
+        self.assertEqual(api.sign_by_qr("TOKEN+/="), "签到成功")
+        self.assertEqual(
+            self.session.body_of("POST", "/CK/QrCodeCheckIn"),
+            {"checkInCode": "TOKEN+/="},
+        )
+
+    def test_sign_by_location_payload(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/CheckInSignInLocation",
+                    FakeResponse(payload={"success": True, "message": "签到成功"}),
+                ),
+            ]
+        )
+        self.assertEqual(api.sign_by_location(116.397, 39.909), "签到成功")
+        self.assertEqual(
+            self.session.body_of("POST", "/CK/CheckInSignInLocation"),
+            {"latitude": 39.909, "longitude": 116.397},
+        )
+
+    def test_rate_limit_message_trips_limiter(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/StudentCheckIn",
+                    FakeResponse(payload={"success": False, "message": "操作过于频繁"}),
+                ),
+            ]
+        )
+        with self.assertRaises(RateLimited):
+            api.sign_by_code("1234")
+        self.assertTrue(api.limiter.is_blocking())
+
+    def test_server_error_message_is_returned(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/StudentCheckIn",
+                    FakeResponse(payload={"success": False, "message": "签到已结束"}),
+                ),
+            ]
+        )
+        self.assertEqual(api.sign_by_code("1234"), "签到已结束")
 
 
-class ResponseRobustnessTest(unittest.TestCase):
-    """服务端返回异常形态时不得抛异常，只能返回空值。"""
+class QueryTest(ApiTestBase):
+    def test_fetch_courses_parses_classes(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/Course/GetStudentCourseList",
+                    FakeResponse(
+                        payload={
+                            "success": True,
+                            "data": {
+                                "courses": [{"courseID": 11, "courseName": "高等数学"}]
+                            },
+                        }
+                    ),
+                ),
+                (
+                    "GET",
+                    "/Class/GetClassListByCourseID/11/2",
+                    FakeResponse(
+                        payload={
+                            "success": True,
+                            "data": [
+                                {"classId": 21, "className": "1 班"},
+                                {"classId": 22, "className": "2 班"},
+                            ],
+                        }
+                    ),
+                ),
+            ]
+        )
+        courses = api.fetch_courses()
+        self.assertEqual([c.class_id for c in courses], ["21", "22"])
+        self.assertEqual(courses[0].name, "高等数学 · 1 班")
 
-    def test_sign_by_location_non_json(self) -> None:
-        api = make_api({"/CheckInRoomHandler.ashx": FakeResponse(text="<html>x</html>")})
-        self.assertIsNone(api.sign_by_location(COURSE, 116.5, 39.5))
+    def test_fetch_courses_survives_missing_classes(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/Course/GetStudentCourseList",
+                    FakeResponse(
+                        payload={
+                            "success": True,
+                            "data": {
+                                "courses": [{"courseID": "11", "courseName": "线性代数"}]
+                            },
+                        }
+                    ),
+                ),
+                (
+                    "GET",
+                    "/Class/GetClassListByCourseID/11/2",
+                    FakeResponse(payload={"success": False, "message": "无教学班"}),
+                ),
+            ]
+        )
+        courses = api.fetch_courses()
+        self.assertEqual(len(courses), 1)
+        self.assertEqual(courses[0].class_id, "0")
 
-    def test_fetch_activities_accepts_int_msg(self) -> None:
-        body = json.dumps({"msg": 1, "rows": [{"ID": "1", "CheckInType": "2"}]})
-        api = make_api({"/MBCount.ashx": FakeResponse(text=body)})
-        activities = api.fetch_activities("456", "42")
-        self.assertIsNotNone(activities)
-        self.assertEqual(len(activities or []), 1)
-        self.assertEqual((activities or [None])[0].type, "2")
+    def test_fetch_active_activity_parses_code(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/CK/GetModelByInProgress/11",
+                    FakeResponse(payload=payload_with_checkin()),
+                ),
+            ]
+        )
+        activity = api.fetch_active_activity("11")
+        self.assertIsNotNone(activity)
+        self.assertEqual(activity.id, "2557759")
+        self.assertEqual(activity.type, "1")
+        self.assertEqual(activity.code, "1234")
+        self.assertEqual(activity.room_id, "88")
+        self.assertFalse(activity.attended)
 
-    def test_fetch_activities_rejects_non_dict(self) -> None:
-        api = make_api({"/MBCount.ashx": FakeResponse(text="[]")})
-        self.assertIsNone(api.fetch_activities("456", "42"))
+    def test_fetch_active_activity_qr_token(self) -> None:
+        payload = payload_with_checkin(checkInType=2, checkInCode="")
+        payload["data"]["qrCode"] = "QR-TOKEN"
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                ("GET", "/CK/GetModelByInProgress/11", FakeResponse(payload=payload)),
+            ]
+        )
+        activity = api.fetch_active_activity("11")
+        self.assertEqual(activity.qr_token, "QR-TOKEN")
 
-    def test_fetch_activities_rejects_html(self) -> None:
-        api = make_api({"/MBCount.ashx": FakeResponse(text="<html>")})
-        self.assertIsNone(api.fetch_activities("456", "42"))
+    def test_fetch_active_activity_empty_payload_returns_none(self) -> None:
+        for payload in (
+            {"success": True, "data": None},
+            {"success": True, "data": {}},
+            {"success": True, "data": {"checkIn": {"id": 0}}},
+            {"success": False, "message": "当前没有进行中的签到"},
+        ):
+            api = self.make_api(
+                [
+                    ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                    ("GET", "/CK/GetModelByInProgress/11", FakeResponse(payload=payload)),
+                ]
+            )
+            self.assertIsNone(api.fetch_active_activity("11"), payload)
+
+    def test_fetch_active_activity_real_error_raises(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/CK/GetModelByInProgress/11",
+                    FakeResponse(payload={"success": False, "message": "参数错误"}),
+                ),
+            ]
+        )
+        with self.assertRaises(AppApiError):
+            api.fetch_active_activity("11")
+
+    def test_fetch_headcount_counts_absence(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "POST",
+                    "/CK/GetCheckInTotalByCheckInIds",
+                    FakeResponse(
+                        payload={
+                            "success": True,
+                            "data": {"totalNumber": 40, "absenceNumber": 10},
+                        }
+                    ),
+                ),
+            ]
+        )
+        self.assertEqual(api.fetch_headcount("77"), (30, 40))
+        self.assertEqual(
+            self.session.body_of("POST", "/CK/GetCheckInTotalByCheckInIds"),
+            {"checkInIds": [77]},
+        )
+
+    def test_fetch_room_coordinates(self) -> None:
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/CK/room/GetCheckInRoomById/88",
+                    FakeResponse(
+                        payload={
+                            "success": True,
+                            "data": {"longitude": 116.397, "latitude": 39.909},
+                        }
+                    ),
+                ),
+            ]
+        )
+        activity = CheckInActivity(
+            id="1",
+            type="3",
+            code="",
+            qr_token="",
+            room_id="88",
+            class_id="21",
+            create_date="",
+            valid_date="",
+            check_in_status="0",
+            status_id="0",
+            status_name="缺勤",
+        )
+        self.assertEqual(api.fetch_room_coordinates(activity), (116.397, 39.909))
 
 
-class LoginProbeTest(unittest.TestCase):
-    """登录态探测的容错行为。"""
+class TokenRefreshTest(ApiTestBase):
+    def test_401_triggers_refresh_then_retry(self) -> None:
+        state = {"sign_calls": 0}
 
-    def test_check_login_true(self) -> None:
-        api = make_api({"/AppCode/LoginInfo.ashx": FakeResponse(text='{"msg":"1"}')})
-        self.assertIs(api.check_login(), True)
+        def sign_reply(method, url, body):
+            state["sign_calls"] += 1
+            if state["sign_calls"] == 1:
+                return FakeResponse(status_code=401, payload=None)
+            return FakeResponse(payload={"success": True, "message": "签到成功"})
 
-    def test_check_login_false_on_empty_body(self) -> None:
-        api = make_api({"/AppCode/LoginInfo.ashx": FakeResponse(text="")})
-        self.assertIsNone(api.check_login())
+        api = self.make_api(
+            [
+                ("POST", "/Auth/login", FakeResponse(payload=LOGIN_OK)),
+                (
+                    "GET",
+                    "/Auth/RefreshAccessToken",
+                    FakeResponse(
+                        payload={
+                            "code": 200,
+                            "success": True,
+                            "data": {
+                                "token": "ACCESS-2",
+                                "refreshToken": "REFRESH-2",
+                                "userInfo": {
+                                    "userId": "9527",
+                                    "userLogin": "20210001",
+                                    "userTypeID": "2",
+                                },
+                            },
+                        }
+                    ),
+                ),
+                ("POST", "/CK/StudentCheckIn", sign_reply),
+            ]
+        )
+        self.assertEqual(api.sign_by_code("1234"), "签到成功")
+        self.assertEqual(state["sign_calls"], 2)
+        self.assertEqual(self.store.load_app_session()["access_token"], "ACCESS-2")
 
 
 if __name__ == "__main__":
