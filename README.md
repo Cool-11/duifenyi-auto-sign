@@ -3,9 +3,10 @@
 > 对分易（duifene）课堂考勤自动签到工具：登录一次、挂机即可，自动完成
 > **签到码 / 二维码 / 定位 / 汉字** 四类签到。
 
-**关键词**：duifenyi、duifenyi-auto-sign、duifene、duifene-check-in、对分易、
-对分易自动签到、对分易脚本、对分易签到助手、自动签到、签到码签到、二维码签到、
-定位签到、汉字签到、大学课堂考勤
+**关键词**：对分易、对分易自动签到、对分易签到、对分易签到助手、对分易脚本、对分易点名、
+duifenyi、duifenyi-auto-sign、duifenyi自动签到、duifene、duifene-auto-sign、
+duifene-check-in、duifene 自动签到、自动签到、签到码签到、二维码签到、定位签到、
+汉字签到、课堂考勤、大学考勤
 
 ![Python](https://img.shields.io/badge/Python-3.12+-blue?logo=python)
 ![pywebview](https://img.shields.io/badge/pywebview-%3E%3D5.0-green?logo=web)
