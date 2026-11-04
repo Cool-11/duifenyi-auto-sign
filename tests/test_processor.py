@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from duifene.errors import AppApiError
-from duifene.models import CheckInActivity, Course, Outcome
+from duifene.models import CheckInActivity, Course, Outcome, SERVER_TIMEZONE
 from duifene.processor import ActivityProcessor
 from duifene.settings import Settings
 
@@ -17,7 +17,7 @@ TIME_FMT = "%Y-%m-%dT%H:%M:%S"
 
 def make_activity(**overrides) -> CheckInActivity:
     """构造一条「刚发起、可签到、未出勤」的活动。"""
-    now = datetime.now()
+    now = datetime.now(SERVER_TIMEZONE)
     values = {
         "id": "2557759",
         "type": "1",
@@ -115,14 +115,14 @@ class GateTest(unittest.TestCase):
 
     def test_ended_activity_is_skipped(self) -> None:
         processor, api, _ = make_processor()
-        past = (datetime.now() - timedelta(minutes=1)).strftime(TIME_FMT)
+        past = (datetime.now(SERVER_TIMEZONE) - timedelta(minutes=1)).strftime(TIME_FMT)
         outcome = processor.process(make_activity(valid_date=past), COURSE)
         self.assertIs(outcome, Outcome.SKIPPED)
         self.assertEqual(api.codes, [])
 
     def test_stale_activity_is_skipped(self) -> None:
         processor, api, logs = make_processor(stale_sign_minutes=1)
-        old = (datetime.now() - timedelta(minutes=5)).strftime(TIME_FMT)
+        old = (datetime.now(SERVER_TIMEZONE) - timedelta(minutes=5)).strftime(TIME_FMT)
         outcome = processor.process(make_activity(create_date=old), COURSE)
         self.assertIs(outcome, Outcome.SKIPPED)
         self.assertTrue(any("旧活动" in line for line in logs))
@@ -147,7 +147,7 @@ class GateTest(unittest.TestCase):
         self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
         self.assertEqual(api.codes, [])
         # 活动已创建 60 秒，超过兜底时限 45 秒 → 直接签
-        old = (datetime.now() - timedelta(seconds=60)).strftime(TIME_FMT)
+        old = (datetime.now(SERVER_TIMEZONE) - timedelta(seconds=60)).strftime(TIME_FMT)
         self.assertIs(
             processor.process(make_activity(create_date=old), COURSE), Outcome.SIGNED
         )

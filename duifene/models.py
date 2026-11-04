@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Mapping
 
 # 服务端可能下发的时间格式：ISO（App 接口）、斜杠与短横线两种老格式
 _TIME_FORMATS = ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M")
+# 对分易接口的 createrDate / validDate 不携带时区，但语义固定为北京时间。
+# 显式附加 UTC+8，避免在非中国时区的电脑上把活动误判成“未来十几个小时”。
+SERVER_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
 def parse_time(value: str) -> datetime | None:
@@ -17,12 +20,13 @@ def parse_time(value: str) -> datetime | None:
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=SERVER_TIMEZONE)
     except ValueError:
         pass
     for fmt in _TIME_FORMATS:
         try:
-            return datetime.strptime(text, fmt)
+            return datetime.strptime(text, fmt).replace(tzinfo=SERVER_TIMEZONE)
         except ValueError:
             continue
     return None
@@ -99,8 +103,8 @@ class CheckInActivity:
         if limit is None:
             return False
         current = now or datetime.now(limit.tzinfo)
-        if limit.tzinfo is None:
-            current = current.replace(tzinfo=None)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=SERVER_TIMEZONE)
         return current > limit
 
     def remaining_seconds(self, now: datetime | None = None) -> int | None:
@@ -109,8 +113,8 @@ class CheckInActivity:
         if limit is None:
             return None
         current = now or datetime.now(limit.tzinfo)
-        if limit.tzinfo is None:
-            current = current.replace(tzinfo=None)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=SERVER_TIMEZONE)
         return int((limit - current).total_seconds())
 
     def age_seconds(self, now: datetime | None = None) -> float | None:
@@ -119,8 +123,8 @@ class CheckInActivity:
         if created is None:
             return None
         current = now or datetime.now(created.tzinfo)
-        if created.tzinfo is None:
-            current = current.replace(tzinfo=None)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=SERVER_TIMEZONE)
         return (current - created).total_seconds()
 
 
@@ -132,4 +136,4 @@ class Outcome(Enum):
     DEFERRED = "deferred"  # 条件未满足，保留待下一轮
 
 
-__all__ = ["Course", "CheckInActivity", "Outcome", "parse_time"]
+__all__ = ["Course", "CheckInActivity", "Outcome", "SERVER_TIMEZONE", "parse_time"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import threading
 import time
+import sys
 from typing import Any
 
 import requests
@@ -274,6 +275,7 @@ class Bridge:
         return {
             "ok": True,
             "version": __version__,
+            "platform": "macos" if sys.platform == "darwin" else "windows" if sys.platform == "win32" else "other",
             "courses": self._courses_payload(),
             "selected": self._course_key(self._course) if self._course else "",
             "logged_in": self._logged_in,

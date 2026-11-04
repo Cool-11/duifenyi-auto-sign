@@ -23,12 +23,22 @@ _LEGACY_SECTIONS = ("INFO",)
 def resolve_ini_path(filename: str) -> str:
     """把相对 ini 路径锚定到稳定位置，避免因启动时工作目录不同而读/写到不同的 ini。
 
-    - PyInstaller 冻结运行：锚到 ``sys.executable``（exe）所在目录；
+    - macOS：锚到 ``~/Library/Application Support/duifenyi-auto-sign``；
+    - 其它 PyInstaller 冻结环境：锚到可执行文件所在目录；
     - 源码运行：锚到项目根目录（``duifene`` 包的上一级）。
     """
     if os.path.isabs(filename):
         return filename
-    if getattr(sys, "frozen", False):
+    if sys.platform == "darwin":
+        base = os.path.join(
+            os.path.expanduser("~/Library/Application Support"),
+            "duifenyi-auto-sign",
+        )
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError:
+            pass
+    elif getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

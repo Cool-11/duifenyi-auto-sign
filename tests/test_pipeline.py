@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from duifene.errors import AuthError
-from duifene.models import CheckInActivity, Course, Outcome
+from duifene.models import CheckInActivity, Course, Outcome, SERVER_TIMEZONE
 from duifene.processor import ActivityProcessor
 from duifene.settings import Settings
 from duifene.watcher import Watcher
@@ -20,7 +20,7 @@ TIME_FMT = "%Y-%m-%dT%H:%M:%S"
 
 
 def make_activity(activity_type: str = "1", **overrides) -> CheckInActivity:
-    now = datetime.now()
+    now = datetime.now(SERVER_TIMEZONE)
     values = {
         "id": "2557759",
         "type": activity_type,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import sys
 
 from duifene.runlog import FileLog, default_log_path
 
@@ -55,7 +56,11 @@ class FileLogTest(unittest.TestCase):
 
     def test_default_log_path_under_logs_directory(self) -> None:
         path = default_log_path()
-        self.assertTrue(path.endswith(os.path.join("logs", "run.log")))
+        if sys.platform == "darwin":
+            self.assertTrue(path.endswith(os.path.join("duifenyi-auto-sign", "run.log")))
+            self.assertIn(os.path.join("Library", "Logs"), path)
+        else:
+            self.assertTrue(path.endswith(os.path.join("logs", "run.log")))
 
 
 if __name__ == "__main__":

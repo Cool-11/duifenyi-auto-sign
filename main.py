@@ -142,6 +142,7 @@ def main() -> None:
         _warn_missing_webview2()
         return
     bridge = Bridge(Settings())
+    is_macos = sys.platform == "darwin"
     window = webview.create_window(
         title=f"对分易自动签到 v{__version__}",
         url=resource_path("web", "index.html"),
@@ -151,7 +152,7 @@ def main() -> None:
         min_size=(1000, 660),
         resizable=False,
         # 无边框：去掉系统标题栏与描边，由前端自绘顶栏（含最小化/关闭）。
-        frameless=True,
+        frameless=not is_macos,
         # easy_drag=False：该开关会在 window 上挂全局 mousedown 监听，导致
         # 整个窗口都能拖动。这里关掉它，改用 pywebview 另一套机制——
         # document.body 上无条件挂载的处理器只认 .pywebview-drag-region 元素，
@@ -160,7 +161,8 @@ def main() -> None:
         background_color=_BACKGROUND,
     )
     bridge.set_window(window)
-    window.events.before_show += lambda: _install_loading_overlay(window)
+    if not is_macos:
+        window.events.before_show += lambda: _install_loading_overlay(window)
     webview.start()
 
 
