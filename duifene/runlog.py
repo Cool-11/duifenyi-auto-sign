@@ -20,6 +20,9 @@ MAX_BYTES = 2 * 1024 * 1024
 
 def default_log_path() -> str:
     """日志文件位置：冻结后锚到 exe 同目录，源码运行锚到项目根目录。"""
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Logs/duifenyi-auto-sign")
+        return os.path.join(base, "run.log")
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:

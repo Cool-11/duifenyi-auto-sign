@@ -12,3 +12,6 @@ build_env/
 dist/
 dist_stage/
 *.zip
+.venv-macos/
+/outputs/
+/work/

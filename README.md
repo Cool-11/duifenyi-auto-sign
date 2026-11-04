@@ -51,7 +51,7 @@ v1.5 及以前走的是**学生端网页接口**（`www.duifene.com/_CheckIn/Che
 
 ## 二、快速上手（三分钟）
 
-1. **双击 `对分易自动签到.exe`**（在 `dist/对分易自动签到/` 里）。
+1. Windows 双击 `对分易自动签到.exe`；macOS 双击 `对分易自动签到.app`。
 2. 输入**对分易账号（手机号/学号）和密码**，点「登录」。
    - 勾选「记住账号密码」后，下次开机会自动登录（密码用 Windows DPAPI 加密，只有本机能解）。
 3. 右栏「监控课程」里选中要盯的课（多教学班时会显示「课程 · 班级」）。
@@ -68,7 +68,7 @@ v1.5 及以前走的是**学生端网页接口**（`www.duifene.com/_CheckIn/Che
 |---|---|---|---|
 | Access Token | `duifenyi.ini` → `[APP_SESSION]` | 30 分钟，到期前 5 分钟自动续期 | 后台每 60 秒检查一次，挂机不断线 |
 | Refresh Token | 同上 | 7 天 | 过期才需要重新登录 |
-| 账号 + 密码 | `duifenyi.ini` → `[ACCOUNT]` | 长期 | **Windows DPAPI 按当前用户加密**，换机器/换账户解不开 |
+| 账号 + 密码 | Windows DPAPI / macOS 登录钥匙串 | 长期 | 仅当前系统用户可读取 |
 
 启动顺序：先复用 `[APP_SESSION]` 里的令牌 → 令牌失效才用保存的密码自动登录一次
 → 都没有就停在登录界面。
@@ -157,6 +157,15 @@ python -m unittest discover -s tests # 76 项离线测试，不联网
 python -m PyInstaller build.spec --noconfirm   # 产物：dist\对分易自动签到\
 ```
 
+macOS 在 Mac 本机执行（会安装构建依赖并生成应用图标）：
+
+```bash
+./build_macos.sh                       # 产物：dist/对分易自动签到.app
+```
+
+首次打开若被 Gatekeeper 拦截，可在 Finder 中右键应用选择“打开”。对外分发时建议使用
+Apple Developer ID 签名并公证；本地自用无需签名。
+
 打包要点：`datas=[("web", "web")]` 必须带上界面资源；v1.6 已不再需要
 Pillow/pyzbar，`build.spec` 里也把 `PIL`/`pyzbar`/`bs4` 显式排除了。
 
@@ -174,6 +183,7 @@ Pillow/pyzbar，`build.spec` 里也把 `PIL`/`pyzbar`/`bs4` 显式排除了。
 
 ## 八、环境要求
 
+- macOS 11 Big Sur 或更高版本（Apple Silicon / Intel，需在对应架构 Mac 上打包）
 - Windows 10（1803+）/ Windows 11，自带 WebView2；缺失时运行根目录 `WebView2Setup.exe`
 - 能访问 `https://dfapp.duifene.com`
 - 源码运行需 Python 3.12+

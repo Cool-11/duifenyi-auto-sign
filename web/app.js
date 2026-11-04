@@ -297,6 +297,7 @@
   // ─ 初始化 ──────────────────────────────────────────────
   function applyBootstrap(res) {
     if (!res) return;
+    document.body.classList.add("platform-" + (res.platform || "other"));
     $("versionChip").textContent = "v" + res.version;
     document.title = "对分易自动签到 v" + res.version;
     fillCourses(res.courses, res.selected);
