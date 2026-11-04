@@ -13,6 +13,12 @@ duifene-check-in、duifene 自动签到、自动签到、签到码签到、二�
 ![version](https://img.shields.io/badge/version-1.6.1-orange)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
+**仓库**：<https://github.com/Cool-11/duifenyi-auto-sign> ｜
+**下载**：[Releases](https://github.com/Cool-11/duifenyi-auto-sign/releases/latest)（免装 Python，双击即用）
+
+> 如果这个版本帮你签上了一节课，点个 ⭐ Star 就是最实在的支持——它也能让更多被同样问题
+> 卡住的同学搜到这个仓库。
+
 ---
 
 ## 一、v1.6 为什么重写
