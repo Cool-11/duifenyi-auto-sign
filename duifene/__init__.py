@@ -4,6 +4,6 @@ from __future__ import annotations
 
 from .settings import Settings
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 __all__ = ["Settings", "__version__"]

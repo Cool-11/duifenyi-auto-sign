@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 import unittest
 from datetime import datetime, timedelta
 
@@ -64,6 +65,7 @@ class StubApi:
         self.room: tuple[float, float] | None = (116.397, 39.909)
         self.detail: CheckInActivity | None = None
         self.detail_calls = 0
+        self.code_error: Exception | None = None
 
     def fetch_headcount(self, activity_id: str):
         if self.headcount_error is not None:
@@ -78,6 +80,8 @@ class StubApi:
         return self.room
 
     def sign_by_code(self, code: str) -> str:
+        if self.code_error is not None:
+            raise self.code_error
         self.codes.append(code)
         return self.code_reply
 
@@ -95,7 +99,6 @@ def make_processor(**settings_overrides):
     settings = Settings()
     settings.sign_delay_s = 0.0
     settings.headcount_ratio = 0.0
-    settings.headcount_deadline_s = 45.0
     settings.qr_retry_interval_s = 0.0
     settings.location_retry_interval_s = 0.0
     for key, value in settings_overrides.items():
@@ -144,13 +147,26 @@ class GateTest(unittest.TestCase):
     def test_ratio_gate_waits_then_deadline_releases(self) -> None:
         processor, api, _ = make_processor(headcount_ratio=0.5)
         api.headcount = (1, 30)
-        self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
+        activity = make_activity()
+        self.assertIs(processor.process(activity, COURSE), Outcome.DEFERRED)
         self.assertEqual(api.codes, [])
-        # 活动已创建 60 秒，超过兜底时限 45 秒 → 直接签
-        old = (datetime.now() - timedelta(seconds=60)).strftime(TIME_FMT)
-        self.assertIs(
-            processor.process(make_activity(create_date=old), COURSE), Outcome.SIGNED
+        # 把「首次看到」的时间往前拨到超过兜底时限
+        processor._first_seen[activity.id] = (
+            time.monotonic() - processor._settings.headcount_deadline_s - 5
         )
+        self.assertIs(processor.process(activity, COURSE), Outcome.SIGNED)
+
+    def test_deadline_works_even_when_create_date_is_garbage(self) -> None:
+        """创建时间解析不出来时，兜底时限仍必须生效（旧实现会无限等下去）。"""
+        processor, api, logs = make_processor(headcount_ratio=0.5)
+        api.headcount = (1, 30)
+        activity = make_activity(create_date="not-a-time")
+        self.assertIs(processor.process(activity, COURSE), Outcome.DEFERRED)
+        self.assertTrue(any("创建时间无法解析" in line for line in logs))
+        processor._first_seen[activity.id] = (
+            time.monotonic() - processor._settings.headcount_deadline_s - 5
+        )
+        self.assertIs(processor.process(activity, COURSE), Outcome.SIGNED)
 
     def test_delay_gate_waits(self) -> None:
         processor, api, logs = make_processor(sign_delay_s=30.0)
@@ -237,6 +253,15 @@ class DispatchTest(unittest.TestCase):
         self.assertIs(processor.process(make_activity(type="9"), COURSE), Outcome.SKIPPED)
         self.assertEqual(api.codes, [])
         self.assertTrue(any("类型未知" in line for line in logs))
+
+    def test_sign_api_error_degrades_to_retry(self) -> None:
+        """单次接口异常不应抛出（旧实现会让整轮循环退避 60 秒，直接睡过签到）。"""
+        processor, api, logs = make_processor()
+        api.code_error = AppApiError("网络请求失败（ProxyError）")
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.DEFERRED)
+        self.assertTrue(any("请求失败" in line for line in logs))
+        api.code_error = None
+        self.assertIs(processor.process(make_activity(), COURSE), Outcome.SIGNED)
 
     def test_signed_activity_is_not_repeated(self) -> None:
         processor, api, _ = make_processor()

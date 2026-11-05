@@ -2,20 +2,42 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Mapping
 
 # 服务端可能下发的时间格式：ISO（App 接口）、斜杠与短横线两种老格式
 _TIME_FORMATS = ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M")
+# ASP.NET 老格式：/Date(1730000000000)/ 或 /Date(1730000000000+0800)/
+_MS_DATE_RE = re.compile(r"/Date\((-?\d+)([+-]\d{4})?\)/")
 
 
 def parse_time(value: str) -> datetime | None:
-    """尽量解析服务端时间；无法解析返回 None（调用方按「未知」处理，不拦签到）。"""
+    """尽量解析服务端时间；无法解析返回 None（调用方按「未知」处理，不拦签到）。
+
+    兼容三类写法：ISO（``2026-11-04T13:00:00``）、斜杠/短横线（``2026/11/04 13:00:00``）
+    以及 ASP.NET 的 ``/Date(毫秒)/``。平台换序列化方式时不必改业务代码。
+    """
     text = str(value or "").strip()
     if not text:
         return None
+    match = _MS_DATE_RE.search(text)
+    if match is not None:
+        try:
+            milli = int(match.group(1))
+            offset = match.group(2)
+            moment = datetime.fromtimestamp(milli / 1000)
+            if offset:
+                sign = 1 if offset[0] == "+" else -1
+                delta = timedelta(
+                    hours=int(offset[1:3]), minutes=int(offset[3:5])
+                )
+                moment -= sign * delta
+            return moment
+        except (ValueError, OSError, OverflowError):
+            return None
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:

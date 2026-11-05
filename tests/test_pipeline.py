@@ -9,7 +9,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 
-from duifene.errors import AuthError
+from duifene.errors import AppApiError, AuthError
 from duifene.models import CheckInActivity, Course, Outcome
 from duifene.processor import ActivityProcessor
 from duifene.settings import Settings
@@ -56,12 +56,15 @@ class StubApi:
         self.codes: list[str] = []
         self.qr_tokens: list[str] = []
         self.locations: list[tuple[float, float]] = []
+        self.fetch_error: Exception | None = None
 
     @property
     def is_authenticated(self) -> bool:
         return self.authenticated
 
     def fetch_active_activity(self, course_id: str):
+        if self.fetch_error is not None:
+            raise self.fetch_error
         return self.activity
 
     def fetch_headcount(self, activity_id: str):
@@ -129,6 +132,18 @@ class WatcherTest(unittest.TestCase):
         api.authenticated = False
         with self.assertRaises(AuthError):
             watcher._tick()
+
+    def test_api_error_is_logged_once_and_does_not_stop_loop(self) -> None:
+        """接口抖动只记一条日志、不抛异常，下一轮照常轮询（不进 60 秒退避）。"""
+        watcher, _processor, api, logs = build()
+        api.fetch_error = AppApiError("读取当前签到失败")
+        watcher._tick()
+        watcher._tick()
+        self.assertEqual(sum("读取签到活动失败" in line for line in logs), 1)
+        api.fetch_error = None
+        api.activity = make_activity("1")
+        watcher._tick()
+        self.assertEqual(api.codes, ["1234"])
 
     def test_start_requires_authentication(self) -> None:
         watcher, _processor, api, _logs = build()

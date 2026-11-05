@@ -48,12 +48,12 @@
         {
           key: "headcount_ratio",
           label: "已签占比门槛",
-          hint: "0–1，如 0.2 表示班里签够 20% 才跟签；0 为不限制",
+          hint: "0=不限制（默认，检测到就签）；如 0.2 表示班里签够 20% 才跟签",
         },
         {
           key: "headcount_deadline_s",
           label: "门槛兜底时限",
-          hint: "秒，超过该时长无论人数多少都直接签",
+          hint: "秒，等待超过该时长无论人数多少都直接签",
         },
         {
           key: "small_class_max",

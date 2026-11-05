@@ -38,6 +38,7 @@ class Watcher:
         self._last_tick_ts = 0.0
         # 时间窗内外状态：仅在跨越边界时记一条日志，避免窗外每轮刷屏
         self._in_window: bool | None = None
+        self._last_api_error = ""
         self._lock = threading.Lock()
 
     @property
@@ -120,8 +121,10 @@ class Watcher:
                 break
             except Exception as exc:  # noqa: BLE001 - 单轮失败不终止监控
                 self._consecutive_errors += 1
+                # 退避从「一轮轮询」起算，且上限压到 error_backoff_max_s（默认 15 秒）：
+                # 签到窗口很短，长退避会让程序在场内完全失声。
                 backoff = min(
-                    self._settings.poll_min_s * (2 ** self._consecutive_errors),
+                    self._settings.poll_max_s * (2 ** (self._consecutive_errors - 1)),
                     self._settings.error_backoff_max_s,
                 )
                 with self._lock:
@@ -172,9 +175,14 @@ class Watcher:
         try:
             activity = self._api.fetch_active_activity(course.course_id)
         except AppApiError as exc:
-            # 单轮接口抖动不升级为「监控异常」，退避由外层循环负责
-            self._consecutive_errors += 1
-            raise AppApiError(f"读取签到活动失败：{exc!s}") from exc
+            # 接口偶尔抖动属正常：只记一条同类原因的日志，下一轮（3–5 秒后）继续，
+            # 绝不进入退避——签到窗口常常只有一两分钟，睡 60 秒等于直接放弃。
+            message = str(exc)
+            if message != self._last_api_error:
+                self._last_api_error = message
+                self._log(self._course_prefix(course, f"读取签到活动失败：{message}"))
+            return
+        self._last_api_error = ""
         if activity is None:
             self._consecutive_errors = 0
             return

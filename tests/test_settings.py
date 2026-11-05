@@ -55,7 +55,14 @@ class ApplyRoundTripTest(unittest.TestCase):
         settings = Settings()
         error = settings.apply({"headcount_ratio": "1.5"})
         self.assertNotEqual(error, "")
-        self.assertAlmostEqual(settings.headcount_ratio, 0.2)  # 失败不落地
+        self.assertAlmostEqual(settings.headcount_ratio, 0.0)  # 失败不落地
+
+    def test_defaults_favour_reliability(self) -> None:
+        """默认不等人（占比门槛关闭），避免「等到签到结束都没签上」。"""
+        settings = Settings()
+        self.assertEqual(settings.headcount_ratio, 0.0)
+        self.assertLessEqual(settings.error_backoff_max_s, 15.0)
+        self.assertLessEqual(settings.headcount_deadline_s, 20.0)
 
     def test_apply_rejects_unknown_field(self) -> None:
         settings = Settings()

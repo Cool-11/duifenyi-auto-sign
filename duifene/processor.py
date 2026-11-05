@@ -53,6 +53,9 @@ class ActivityProcessor:
         self._results: dict[str, str] = {}
         # 二维码 / 定位的重试节拍
         self._last_attempt: dict[str, float] = {}
+        # 首次看到该活动的时间：门禁等待一律以「本程序看到它」为起点计时，
+        # 不依赖服务端下发的创建时间——时间格式一旦变了，旧实现会永远等下去。
+        self._first_seen: dict[str, float] = {}
 
     def reset(self) -> None:
         """清空跨轮次状态。"""
@@ -60,6 +63,16 @@ class ActivityProcessor:
         self._notices.clear()
         self._results.clear()
         self._last_attempt.clear()
+        self._first_seen.clear()
+
+    def _elapsed(self, activity_id: str) -> float:
+        """该活动从首次被看到至今经过的秒数（首次调用记为 0）。"""
+        now = time.monotonic()
+        first = self._first_seen.get(activity_id)
+        if first is None:
+            self._first_seen[activity_id] = now
+            return 0.0
+        return max(0.0, now - first)
 
     # ─ 主流程 ──────────────────────────────────────────────────────
     def process(self, activity: CheckInActivity, course: Course) -> Outcome:
@@ -74,7 +87,17 @@ class ActivityProcessor:
             self._mark(course, aid, "已超过签到结束时间")
             return Outcome.SKIPPED
         age = activity.age_seconds()
-        if age is not None and age > self._settings.stale_sign_minutes * 60:
+        elapsed = self._elapsed(aid)
+        if age is None:
+            # 时间戳解析不出来不是致命问题，但会让「旧活动」判断失效，留一条痕
+            self._notice(
+                aid,
+                "time_unparsed",
+                course,
+                f"活动 {aid} 创建时间无法解析（{activity.create_date!r}），"
+                f"改为按检测时间计时，不影响签到",
+            )
+        elif age > self._settings.stale_sign_minutes * 60:
             self._mark(
                 course,
                 aid,
@@ -86,40 +109,50 @@ class ActivityProcessor:
             self._notice(aid, f"limiter_{left}", course, f"限流中，{left} 秒后恢复")
             return Outcome.DEFERRED
 
-        gate = self._delay_gate(activity, age, course)
+        gate = self._delay_gate(activity, elapsed, course)
         if gate is not None:
             return gate
-        gate = self._headcount_gate(activity, age, course)
+        gate = self._headcount_gate(activity, elapsed, course)
         if gate is not None:
             return gate
         return self._execute(activity, course)
 
     def _delay_gate(
-        self, activity: CheckInActivity, age: float | None, course: Course
+        self, activity: CheckInActivity, elapsed: float, course: Course
     ) -> Outcome | None:
-        """延迟门禁：检测到签到后等待 ``sign_delay_s`` 秒再签；未启用返回 None。"""
+        """延迟门禁：检测到签到后等待 ``sign_delay_s`` 秒再签；未启用返回 None。
+
+        计时起点是「本程序第一次看到这场签到」，而不是服务端下发的创建时间：
+        签到往往在我们轮询之后才被创建，用创建时间会让延迟直接失效。
+        """
         delay = self._settings.sign_delay_s
-        if delay <= 0 or age is None or age >= delay:
+        if delay <= 0 or elapsed >= delay:
             return None
-        left = int(delay - age)
+        left = int(delay - elapsed)
         self._notice(
             activity.id, f"delay_{left}", course, f"活动 {activity.id} 延迟等待中，还剩 {left} 秒"
         )
         return Outcome.DEFERRED
 
     def _headcount_gate(
-        self, activity: CheckInActivity, age: float | None, course: Course
+        self, activity: CheckInActivity, elapsed: float, course: Course
     ) -> Outcome | None:
         """人数门禁：需继续等待返回 :attr:`Outcome.DEFERRED`，可签返回 None。
 
         任何取不到人数、人数为 0、或等待超过 ``headcount_deadline_s`` 的情况都
         直接放行（fail-open）——人数只用于降低「第一个签」的风控风险，不是签到
-        的前提条件。
+        的前提条件。兜底计时同样以「看到它」为起点，因此创建时间解析失败也不会
+        把签到卡死。
         """
         aid = activity.id
         deadline = self._settings.headcount_deadline_s
-        if age is not None and deadline > 0 and age >= deadline:
-            self._notice(aid, "deadline", course, f"活动 {aid} 已达兜底时限，直接签到")
+        if deadline > 0 and elapsed >= deadline:
+            self._notice(
+                aid,
+                "deadline",
+                course,
+                f"活动 {aid} 已等待 {int(elapsed)} 秒，不再等人数，直接签到",
+            )
             return None
         try:
             signed, total = self._api.fetch_headcount(aid)
@@ -140,12 +173,12 @@ class ActivityProcessor:
             return None
         if total < self._settings.small_class_max:
             wait_until = self._settings.small_class_delay_s
-            if age is not None and age < wait_until:
+            if elapsed < wait_until:
                 self._notice(
                     aid,
-                    f"small_{int(wait_until - age)}",
+                    f"small_{int(wait_until - elapsed)}",
                     course,
-                    f"活动 {aid} 小班 {total} 人，{int(wait_until - age)} 秒后签到",
+                    f"活动 {aid} 小班 {total} 人，{int(wait_until - elapsed)} 秒后签到",
                 )
                 return Outcome.DEFERRED
             return None
@@ -185,6 +218,18 @@ class ActivityProcessor:
                 return Outcome.SKIPPED
         except RateLimited as exc:
             self._log(f"课程: {course.name} 活动 {activity.id} {exc!s}")
+            return Outcome.DEFERRED
+        except AuthError:
+            raise
+        except AppApiError as exc:
+            # 单次接口抖动不该让整轮循环失败（旧实现会把退避拉到 60 秒，
+            # 等于把整场签到睡过去），这里降级为下一轮重试。
+            self._notice(
+                activity.id,
+                "api_error",
+                course,
+                f"活动 {activity.id} 请求失败（{exc!s}），下一轮重试",
+            )
             return Outcome.DEFERRED
         if outcome is Outcome.SIGNED:
             self._handled.add(activity.id)

@@ -117,18 +117,20 @@ class Settings:
     # 轮询：区间内随机，避免固定节律被风控识别
     poll_min_s: float = 3.0
     poll_max_s: float = 5.0
-    # 连续异常时的退避上限（秒）
-    error_backoff_max_s: float = 60.0
+    # 连续异常时的退避上限（秒）：签到窗口常只有一两分钟，退避给太久等于放弃
+    error_backoff_max_s: float = 15.0
 
     # 活动筛选：创建超过该分钟数的活动不再处理
     stale_sign_minutes: int = 30
     # 检测到签到后延迟多少秒再提交（0=立即），用于规避「秒签」风控
     sign_delay_s: float = 0.0
-    # 兜底：活动创建后超过该秒数即无视人数门槛直接签，保证不因人数接口异常而错过
-    headcount_deadline_s: float = 45.0
+    # 兜底：等待超过该秒数即无视人数门槛直接签，保证不因人数接口异常而错过
+    headcount_deadline_s: float = 20.0
 
-    # 人数门禁：已签人数占总人数比例达到该值才签（0 表示不启用）
-    headcount_ratio: float = 0.2
+    # 人数门禁：已签人数占总人数比例达到该值才签。默认 0（不限制）——
+    # 它是「降低第一个签的风控风险」的优化项，开启后会让签到晚几秒，
+    # 对只在课上待一分钟的活动反而是风险，因此默认关闭，需要时在设置里打开。
+    headcount_ratio: float = 0.0
     # 小班直签：总人数低于该值且活动创建满 small_class_delay_s 秒即签
     small_class_max: int = 5
     small_class_delay_s: float = 5.0
